@@ -23,18 +23,22 @@ import (
 
 // ErrCompacted is returned by Storage.Entries/Compact when a requested
 // index is unavailable because it predates the last snapshot.
+// 某个索引已经被快照保存时返回该错误
 var ErrCompacted = errors.New("requested index is unavailable due to compaction")
 
 // ErrSnapOutOfDate is returned by Storage.CreateSnapshot when a requested
 // index is older than the existing snapshot.
+// 当调用Storage.CreateSnapshot函数时传入的索引比当前的快照索引更小时返回
 var ErrSnapOutOfDate = errors.New("requested index is older than the existing snapshot")
 
 // ErrUnavailable is returned by Storage interface when the requested log entries
 // are unavailable.
+// 请求的log不可用时返回
 var ErrUnavailable = errors.New("requested entry at index is unavailable")
 
 // ErrSnapshotTemporarilyUnavailable is returned by the Storage interface when the required
 // snapshot is temporarily unavailable.
+// 快照暂时不可用时返回
 var ErrSnapshotTemporarilyUnavailable = errors.New("snapshot is temporarily unavailable")
 
 // Storage is an interface that may be implemented by the application
@@ -71,6 +75,7 @@ type Storage interface {
 
 // MemoryStorage implements the Storage interface backed by an
 // in-memory array.
+// 使用在内存中的数组来实现Storage接口的结构体
 type MemoryStorage struct {
 	// Protects access to all fields. Most methods of MemoryStorage are
 	// run on the raft goroutine, but Append() is run on an application
@@ -87,6 +92,7 @@ type MemoryStorage struct {
 func NewMemoryStorage() *MemoryStorage {
 	return &MemoryStorage{
 		// When starting from scratch populate the list with a dummy entry at term zero.
+		// 数组的第一条数据是一条dummy数据
 		ents: make([]pb.Entry, 1),
 	}
 }
@@ -125,13 +131,16 @@ func (ms *MemoryStorage) Entries(lo, hi, maxSize uint64) ([]pb.Entry, error) {
 }
 
 // Term implements the Storage interface.
+// 传入一个索引，返回它的term
 func (ms *MemoryStorage) Term(i uint64) (uint64, error) {
 	ms.Lock()
 	defer ms.Unlock()
 	offset := ms.ents[0].Index
+	// 如果比当前数据最小的索引还小，说明已经被compact过了
 	if i < offset {
 		return 0, ErrCompacted
 	}
+	// 如果超过当前数组大小，返回不可用
 	if int(i-offset) >= len(ms.ents) {
 		return 0, ErrUnavailable
 	}
@@ -169,6 +178,7 @@ func (ms *MemoryStorage) Snapshot() (pb.Snapshot, error) {
 
 // ApplySnapshot overwrites the contents of this Storage object with
 // those of the given snapshot.
+// 使用快照数据进行数据还原
 func (ms *MemoryStorage) ApplySnapshot(snap pb.Snapshot) error {
 	ms.Lock()
 	defer ms.Unlock()
@@ -189,18 +199,22 @@ func (ms *MemoryStorage) ApplySnapshot(snap pb.Snapshot) error {
 // can be used to reconstruct the state at that point.
 // If any configuration changes have been made since the last compaction,
 // the result of the last ApplyConfChange must be passed in.
+// 根据传入的数据创建快照并且返回
 func (ms *MemoryStorage) CreateSnapshot(i uint64, cs *pb.ConfState, data []byte) (pb.Snapshot, error) {
 	ms.Lock()
 	defer ms.Unlock()
+	// 检查传入的索引如果比已经有的快照索引更小，说明已经过时了
 	if i <= ms.snapshot.Metadata.Index {
 		return pb.Snapshot{}, ErrSnapOutOfDate
 	}
 
 	offset := ms.ents[0].Index
+	// 传入的索引不能超过最大索引
 	if i > ms.lastIndex() {
 		raftLogger.Panicf("snapshot %d is out of bound lastindex(%d)", i, ms.lastIndex())
 	}
 
+	// 更新快照中的数据
 	ms.snapshot.Metadata.Index = i
 	ms.snapshot.Metadata.Term = ms.ents[i-offset].Term
 	if cs != nil {
@@ -213,6 +227,7 @@ func (ms *MemoryStorage) CreateSnapshot(i uint64, cs *pb.ConfState, data []byte)
 // Compact discards all log entries prior to compactIndex.
 // It is the application's responsibility to not attempt to compact an index
 // greater than raftLog.applied.
+// 数据压缩，将compactIndex之前的数据丢弃掉
 func (ms *MemoryStorage) Compact(compactIndex uint64) error {
 	ms.Lock()
 	defer ms.Unlock()
@@ -236,6 +251,7 @@ func (ms *MemoryStorage) Compact(compactIndex uint64) error {
 // Append the new entries to storage.
 // TODO (xiangli): ensure the entries are continuous and
 // entries[0].Index > ms.entries[0].Index
+// 添加数据
 func (ms *MemoryStorage) Append(entries []pb.Entry) error {
 	if len(entries) == 0 {
 		return nil
@@ -244,24 +260,32 @@ func (ms *MemoryStorage) Append(entries []pb.Entry) error {
 	ms.Lock()
 	defer ms.Unlock()
 
+	// 得到当前第一条数据的索引
 	first := ms.firstIndex()
+	// 得到传入的最后一条数据的索引
 	last := entries[0].Index + uint64(len(entries)) - 1
 
 	// shortcut if there is no new entry.
+	// 检查合法性
 	if last < first {
 		return nil
 	}
+
 	// truncate compacted entries
+	// 如果当前已经包含传入数据中的一部分，那么已经有的那部分数据可以不用重复添加进来
 	if first > entries[0].Index {
 		entries = entries[first-entries[0].Index:]
 	}
 
+	// 计算传入数据到当前已经保留数据的偏移量
 	offset := entries[0].Index - ms.ents[0].Index
 	switch {
 	case uint64(len(ms.ents)) > offset:
+		// 如果当前数据量大于偏移量，说明offset之前的数据从原有数据中取得，之后的数据从传入的数据中取得
 		ms.ents = append([]pb.Entry{}, ms.ents[:offset]...)
 		ms.ents = append(ms.ents, entries...)
 	case uint64(len(ms.ents)) == offset:
+		// offset刚好等于当前数据量，说明传入的数据刚好紧挨着当前的数据，所以直接添加进来就好了
 		ms.ents = append(ms.ents, entries...)
 	default:
 		raftLogger.Panicf("missing log entry [last: %d, append at: %d]",

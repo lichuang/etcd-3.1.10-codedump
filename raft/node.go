@@ -37,6 +37,8 @@ var (
 
 // SoftState provides state that is useful for logging and debugging.
 // The state is volatile and does not need to be persisted to the WAL.
+// 软状态是异变的，包括：当前集群leader、当前节点状态
+// 这部分数据不需要存储到持久化中
 type SoftState struct {
 	Lead      uint64 // must use atomic operations to access; keep 64-bit aligned.
 	RaftState StateType
@@ -53,35 +55,43 @@ type Ready struct {
 	// The current volatile state of a Node.
 	// SoftState will be nil if there is no update.
 	// It is not required to consume or store SoftState.
+	// 软状态是异变的，包括：当前集群leader、当前节点状态
 	*SoftState
 
 	// The current state of a Node to be saved to stable storage BEFORE
 	// Messages are sent.
 	// HardState will be equal to empty state if there is no update.
+	// 硬状态需要被保存，包括：节点当前Term、Vote、Commit
+	// 如果当前这部分没有更新，则等于空状态
 	pb.HardState
 
 	// ReadStates can be used for node to serve linearizable read requests locally
 	// when its applied index is greater than the index in ReadState.
 	// Note that the readState will be returned when raft receives msgReadIndex.
 	// The returned is only valid for the request that requested to read.
+	// 保存ready状态的readindex数据信息
 	ReadStates []ReadState
 
 	// Entries specifies entries to be saved to stable storage BEFORE
 	// Messages are sent.
+	// 需要在消息发送之前被写入到持久化存储中的entries数据数组
 	Entries []pb.Entry
 
 	// Snapshot specifies the snapshot to be saved to stable storage.
+	// 需要写入到持久化存储中的快照数据
 	Snapshot pb.Snapshot
 
 	// CommittedEntries specifies entries to be committed to a
 	// store/state-machine. These have previously been committed to stable
 	// store.
+	// 需要输入到状态机中的数据数组，这些数据之前已经被保存到持久化存储中了
 	CommittedEntries []pb.Entry
 
 	// Messages specifies outbound messages to be sent AFTER Entries are
 	// committed to stable storage.
 	// If it contains a MsgSnap message, the application MUST report back to raft
 	// when the snapshot has been received or has failed by calling ReportSnapshot.
+	// 在entries被写入持久化存储中以后，需要发送出去的数据
 	Messages []pb.Message
 }
 
@@ -99,6 +109,7 @@ func IsEmptySnap(sp pb.Snapshot) bool {
 	return sp.Metadata.Index == 0
 }
 
+// ready数据中是否有更新
 func (rd Ready) containsUpdates() bool {
 	return rd.SoftState != nil || !IsEmptyHardState(rd.HardState) ||
 		!IsEmptySnap(rd.Snapshot) || len(rd.Entries) > 0 ||
@@ -174,6 +185,7 @@ func StartNode(c *Config, peers []Peer) Node {
 	r := newRaft(c)
 	// become the follower at term 1 and apply initial configuration
 	// entries of term 1
+	// 初次启动以term为1来启动
 	r.becomeFollower(1, None)
 	for _, peer := range peers {
 		cc := pb.ConfChange{Type: pb.ConfChangeAddNode, NodeID: peer.ID, Context: peer.Context}
@@ -222,7 +234,9 @@ func RestartNode(c *Config) Node {
 
 // node is the canonical implementation of the Node interface
 type node struct {
+	// 提交本地请求数据用的channel
 	propc      chan pb.Message
+	// 接收外部请求数据用的channel
 	recvc      chan pb.Message
 	confc      chan pb.ConfChange
 	confstatec chan pb.ConfState
@@ -266,6 +280,7 @@ func (n *node) Stop() {
 	<-n.done
 }
 
+// node的主循环
 func (n *node) run(r *raft) {
 	var propc chan pb.Message
 	var readyc chan Ready
@@ -281,25 +296,33 @@ func (n *node) run(r *raft) {
 
 	for {
 		if advancec != nil {
+			// advance channel不为空，说明还在等应用调用Advance接口通知已经处理完毕了本次的ready数据
 			readyc = nil
 		} else {
 			rd = newReady(r, prevSoftSt, prevHardSt)
 			if rd.containsUpdates() {
+				// 如果这次ready消息有包含更新，那么ready channel就不为空
 				readyc = n.readyc
 			} else {
+				// 否则为空
 				readyc = nil
 			}
 		}
 
 		if lead != r.lead {
-			if r.hasLeader() {
+			// 如果leader发生了变化
+			if r.hasLeader() {	// 如果原来有leader
 				if lead == None {
+					// 当前没有leader
 					r.logger.Infof("raft.node: %x elected leader %x at term %d", r.id, r.lead, r.Term)
 				} else {
+					// leader发生了改变
 					r.logger.Infof("raft.node: %x changed leader from %x to %x at term %d", r.id, lead, r.lead, r.Term)
 				}
+				// 有leader，那么可以进行数据提交，prop channel不为空
 				propc = n.propc
 			} else {
+				// 否则，prop channel为空
 				r.logger.Infof("raft.node: %x lost leader %x at term %d", r.id, lead, r.Term)
 				propc = nil
 			}
@@ -311,11 +334,14 @@ func (n *node) run(r *raft) {
 		// described in raft dissertation)
 		// Currently it is dropped in Step silently.
 		case m := <-propc:
+			// 处理本地收到的提交值
 			m.From = r.id
 			r.Step(m)
 		case m := <-n.recvc:
+			// 处理其他节点发送过来的提交值
 			// filter out response message from unknown From.
 			if _, ok := r.prs[m.From]; ok || !IsResponseMsg(m.Type) {
+				// 需要确保节点在集群中或者不是应答类消息的情况下才进行处理
 				r.Step(m) // raft never returns an error
 			}
 		case cc := <-n.confc:
@@ -349,6 +375,9 @@ func (n *node) run(r *raft) {
 		case <-n.tickc:
 			r.tick()
 		case readyc <- rd:
+			// 通过channel写入ready数据
+
+			// 以下先把ready的值保存下来，等待下一次循环使用，或者当advance调用完毕之后用于修改raftLog的
 			if rd.SoftState != nil {
 				prevSoftSt = rd.SoftState
 			}
@@ -366,8 +395,10 @@ func (n *node) run(r *raft) {
 
 			r.msgs = nil
 			r.readStates = nil
+			// 修改advance channel不为空，等待接收advance消息
 			advancec = n.advancec
 		case <-advancec:
+			// 收到advance channel的消息
 			if prevHardSt.Commit != 0 {
 				r.raftLog.appliedTo(prevHardSt.Commit)
 			}

@@ -79,6 +79,7 @@ type MessageType int32
 const (
 	MsgHup            MessageType = 0
 	MsgBeat           MessageType = 1
+	// 提交数据
 	MsgProp           MessageType = 2
 	MsgApp            MessageType = 3
 	MsgAppResp        MessageType = 4
@@ -253,6 +254,7 @@ func (m *Message) String() string            { return proto.CompactTextString(m)
 func (*Message) ProtoMessage()               {}
 func (*Message) Descriptor() ([]byte, []int) { return fileDescriptorRaft, []int{3} }
 
+// 硬状态需要被保存，包括：节点当前Term、Vote、Commit
 type HardState struct {
 	Term             uint64 `protobuf:"varint,1,opt,name=term" json:"term"`
 	Vote             uint64 `protobuf:"varint,2,opt,name=vote" json:"vote"`

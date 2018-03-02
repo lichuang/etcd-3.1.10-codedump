@@ -35,6 +35,11 @@ func (st ProgressStateType) String() string { return prstmap[uint64(st)] }
 // Progress represents a follower’s progress in the view of the leader. Leader maintains
 // progresses of all followers, and sends entries to the follower based on its progress.
 type Progress struct {
+	// Next保存的是下一次leader发送append消息时传送过来的日志索引
+	// 当选举出新的leader时，首先初始化Next为该leader最后一条日志+1
+	// 然后如果向该节点append日志失败，则递减Next回退日志，一直回退到索引匹配为止
+
+	// Match保存在该节点上保存的日志的最大索引，初始化为0
 	Match, Next uint64
 	// State defines how the leader should interact with the follower.
 	//
@@ -164,8 +169,10 @@ func (pr *Progress) IsPaused() bool {
 	case ProgressStateProbe:
 		return pr.Paused
 	case ProgressStateReplicate:
+		// 如果在replicate状态，pause与否取决于infilght数组是否满了
 		return pr.ins.full()
 	case ProgressStateSnapshot:
+		// 处理快照时一定是paused的
 		return true
 	default:
 		panic("unexpected state")
@@ -212,8 +219,10 @@ func (in *inflights) add(inflight uint64) {
 	next := in.start + in.count
 	size := in.size
 	if next >= size {
+		// 索引如果超过size了，要回绕回来
 		next -= size
 	}
+	// buffer不够就要增加
 	if next >= len(in.buffer) {
 		in.growBuf()
 	}
@@ -224,6 +233,7 @@ func (in *inflights) add(inflight uint64) {
 // grow the inflight buffer by doubling up to inflights.size. We grow on demand
 // instead of preallocating to inflights.size to handle systems which have
 // thousands of Raft groups per process.
+// 增加buffer
 func (in *inflights) growBuf() {
 	newSize := len(in.buffer) * 2
 	if newSize == 0 {
@@ -239,26 +249,32 @@ func (in *inflights) growBuf() {
 // freeTo frees the inflights smaller or equal to the given `to` flight.
 func (in *inflights) freeTo(to uint64) {
 	if in.count == 0 || to < in.buffer[in.start] {
+		// 窗口为空，或者传入的参数小于窗口第一个元素的值
 		// out of the left side of the window
 		return
 	}
 
 	i, idx := 0, in.start
 	for i = 0; i < in.count; i++ {
+		// 寻找比to大的最小的值，找到了就退出循环
 		if to < in.buffer[idx] { // found the first large inflight
 			break
 		}
 
 		// increase index and maybe rotate
+		// 处理需要回绕的情况
 		size := in.size
 		if idx++; idx >= size {
 			idx -= size
 		}
 	}
 	// free i inflights and set new start index
+	// 数量减少那些小于to的数据
 	in.count -= i
+	// 开始索引从第一个大于to的元素开始
 	in.start = idx
 	if in.count == 0 {
+		// 如果经过这次缩减，count为0，那么start从0开始
 		// inflights is empty, reset the start index so that we don't grow the
 		// buffer unnecessarily.
 		in.start = 0
