@@ -92,7 +92,7 @@ type MemoryStorage struct {
 func NewMemoryStorage() *MemoryStorage {
 	return &MemoryStorage{
 		// When starting from scratch populate the list with a dummy entry at term zero.
-		// 数组的第一条数据是一条dummy数据
+		// 数组的第一条数据是一条dummy数据，为什么？？？
 		ents: make([]pb.Entry, 1),
 	}
 }
@@ -187,6 +187,7 @@ func (ms *MemoryStorage) ApplySnapshot(snap pb.Snapshot) error {
 	msIndex := ms.snapshot.Metadata.Index
 	snapIndex := snap.Metadata.Index
 	if msIndex >= snapIndex {
+		// 索引过期
 		return ErrSnapOutOfDate
 	}
 

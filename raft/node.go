@@ -238,7 +238,9 @@ type node struct {
 	propc      chan pb.Message
 	// 接收外部请求数据用的channel
 	recvc      chan pb.Message
+	// 接收配置更新的channel
 	confc      chan pb.ConfChange
+	// 接收最新配置状态的channel
 	confstatec chan pb.ConfState
 	readyc     chan Ready
 	advancec   chan struct{}
@@ -345,7 +347,9 @@ func (n *node) run(r *raft) {
 				r.Step(m) // raft never returns an error
 			}
 		case cc := <-n.confc:
+			// 接收到配置发生变化的消息
 			if cc.NodeID == None {
+				// NodeId为空的情况，只需要直接返回当前的nodes就好
 				r.resetPendingConf()
 				select {
 				case n.confstatec <- pb.ConfState{Nodes: r.nodes()}:
@@ -359,6 +363,7 @@ func (n *node) run(r *raft) {
 			case pb.ConfChangeRemoveNode:
 				// block incoming proposal when local node is
 				// removed
+				// 如果删除的是本节点，停止提交
 				if cc.NodeID == r.id {
 					propc = nil
 				}
@@ -368,6 +373,7 @@ func (n *node) run(r *raft) {
 			default:
 				panic("unexpected conf type")
 			}
+			// 返回当前nodes
 			select {
 			case n.confstatec <- pb.ConfState{Nodes: r.nodes()}:
 			case <-n.done:
@@ -382,6 +388,7 @@ func (n *node) run(r *raft) {
 				prevSoftSt = rd.SoftState
 			}
 			if len(rd.Entries) > 0 {
+				// 保存上一次还未持久化的entries的index、term
 				prevLastUnstablei = rd.Entries[len(rd.Entries)-1].Index
 				prevLastUnstablet = rd.Entries[len(rd.Entries)-1].Term
 				havePrevLastUnstablei = true
@@ -400,9 +407,11 @@ func (n *node) run(r *raft) {
 		case <-advancec:
 			// 收到advance channel的消息
 			if prevHardSt.Commit != 0 {
+				// 将committed的消息applied
 				r.raftLog.appliedTo(prevHardSt.Commit)
 			}
 			if havePrevLastUnstablei {
+				// 将还没有持久化的数据进行持久化
 				r.raftLog.stableTo(prevLastUnstablei, prevLastUnstablet)
 				havePrevLastUnstablei = false
 			}
@@ -421,6 +430,7 @@ func (n *node) run(r *raft) {
 // and heartbeat timeouts are in units of ticks.
 func (n *node) Tick() {
 	select {
+	// 向tick channel写入空数据，唤醒之
 	case n.tickc <- struct{}{}:
 	case <-n.done:
 	default:
@@ -478,13 +488,16 @@ func (n *node) Advance() {
 	}
 }
 
+// 应用配置更新，返回当前配置状态
 func (n *node) ApplyConfChange(cc pb.ConfChange) *pb.ConfState {
 	var cs pb.ConfState
 	select {
+	// 向配置更新channel写入要更新的配置
 	case n.confc <- cc:
 	case <-n.done:
 	}
 	select {
+	// 等待最新的配置状态返回
 	case cs = <-n.confstatec:
 	case <-n.done:
 	}
@@ -532,8 +545,11 @@ func (n *node) ReadIndex(ctx context.Context, rctx []byte) error {
 
 func newReady(r *raft, prevSoftSt *SoftState, prevHardSt pb.HardState) Ready {
 	rd := Ready{
+		// entries保存的是没有持久化的数据数组
 		Entries:          r.raftLog.unstableEntries(),
+		// 保存committed但是还没有applied的数据数组
 		CommittedEntries: r.raftLog.nextEnts(),
+		// 保存待发送的消息
 		Messages:         r.msgs,
 	}
 	if softSt := r.softState(); !softSt.equal(prevSoftSt) {
@@ -543,6 +559,7 @@ func newReady(r *raft, prevSoftSt *SoftState, prevHardSt pb.HardState) Ready {
 		rd.HardState = hardSt
 	}
 	if r.raftLog.unstable.snapshot != nil {
+		// 如果未持久化的快照数据存在，也需要返回去
 		rd.Snapshot = *r.raftLog.unstable.snapshot
 	}
 	if len(r.readStates) != 0 {

@@ -32,6 +32,7 @@ var prstmap = [...]string{
 
 func (st ProgressStateType) String() string { return prstmap[uint64(st)] }
 
+// 该数据结构用于在leader中保存每个follower的状态信息，leader将根据这些信息决定发送给节点的日志
 // Progress represents a follower’s progress in the view of the leader. Leader maintains
 // progresses of all followers, and sends entries to the follower based on its progress.
 type Progress struct {
@@ -80,9 +81,11 @@ type Progress struct {
 	// When a leader receives a reply, the previous inflights should
 	// be freed by calling inflights.freeTo with the index of the last
 	// received entry.
+	// 用于实现滑动窗口，用来做流量控制
 	ins *inflights
 }
 
+// 重置状态
 func (pr *Progress) resetState(state ProgressStateType) {
 	pr.Paused = false
 	pr.PendingSnapshot = 0
@@ -90,13 +93,16 @@ func (pr *Progress) resetState(state ProgressStateType) {
 	pr.ins.reset()
 }
 
+// 修改为probe状态
 func (pr *Progress) becomeProbe() {
 	// If the original state is ProgressStateSnapshot, progress knows that
 	// the pending snapshot has been sent to this peer successfully, then
 	// probes from pendingSnapshot + 1.
 	if pr.State == ProgressStateSnapshot {
+		// 如果当前状态是接受快照状态，那么可以知道该节点已经成功接受处理了该快照，此时修改next索引需要根据max和快照索引来判断
 		pendingSnapshot := pr.PendingSnapshot
 		pr.resetState(ProgressStateProbe)
+		// 取两者的最大值+1
 		pr.Next = max(pr.Match+1, pendingSnapshot+1)
 	} else {
 		pr.resetState(ProgressStateProbe)
@@ -116,6 +122,7 @@ func (pr *Progress) becomeSnapshot(snapshoti uint64) {
 
 // maybeUpdate returns false if the given n index comes from an outdated message.
 // Otherwise it updates the progress and returns true.
+// 如果传入的n小于等于当前的match索引，则索引就不会更新，返回false；否则更新索引返回true
 func (pr *Progress) maybeUpdate(n uint64) bool {
 	var updated bool
 	if pr.Match < n {
@@ -133,23 +140,30 @@ func (pr *Progress) optimisticUpdate(n uint64) { pr.Next = n + 1 }
 
 // maybeDecrTo returns false if the given to index comes from an out of order message.
 // Otherwise it decreases the progress next index to min(rejected, last) and returns true.
+// rejected是拒绝该append消息时的索引，last是该节点的最后一条日志索引
 func (pr *Progress) maybeDecrTo(rejected, last uint64) bool {
-	if pr.State == ProgressStateReplicate {
+	if pr.State == ProgressStateReplicate {	// 如果当前在接收副本状态
 		// the rejection must be stale if the progress has matched and "rejected"
 		// is smaller than "match".
 		if rejected <= pr.Match {
+			// 这种情况说明返回的情况已经过期，中间有其他添加成功的情况，导致match索引递增，此时不需要回退索引，返回false
 			return false
 		}
 		// directly decrease next to match + 1
+		// 否则直接修改next到match+1
 		pr.Next = pr.Match + 1
 		return true
 	}
 
+	// 以下都不是接收副本状态的情况
+
 	// the rejection must be stale if "rejected" does not match next - 1
 	if pr.Next-1 != rejected {
+		// 这种情况说明返回的情况已经过期，不需要回退索引，返回false
 		return false
 	}
 
+	// 到了这里就回退Next为两者的较小值
 	if pr.Next = min(rejected, last+1); pr.Next < 1 {
 		pr.Next = 1
 	}
@@ -183,6 +197,7 @@ func (pr *Progress) snapshotFailure() { pr.PendingSnapshot = 0 }
 
 // needSnapshotAbort returns true if snapshot progress's Match
 // is equal or higher than the pendingSnapshot.
+// 可以中断快照的情况：当前为接收快照，同时match已经大于等于快照索引
 func (pr *Progress) needSnapshotAbort() bool {
 	return pr.State == ProgressStateSnapshot && pr.Match >= pr.PendingSnapshot
 }

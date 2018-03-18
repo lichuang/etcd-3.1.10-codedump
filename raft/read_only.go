@@ -22,7 +22,9 @@ import pb "github.com/coreos/etcd/raft/raftpb"
 // state is what it requests through RequestCtx, eg. given a unique id as
 // RequestCtx
 type ReadState struct {
+	// 保存接收该读请求时的committed index
 	Index      uint64
+	// 保存读请求ID，全局唯一的定义一次读请求
 	RequestCtx []byte
 }
 

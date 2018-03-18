@@ -33,7 +33,9 @@ type raftLog struct {
 
 	// committed is the highest log position that is known to be in
 	// stable storage on a quorum of nodes.
+	// committed数据索引
 	committed uint64
+
 	// applied is the highest log position that the application has
 	// been instructed to apply to its state machine.
 	// Invariant: applied <= committed
@@ -87,12 +89,12 @@ func (l *raftLog) maybeAppend(index, logTerm, committed uint64, ents ...pb.Entry
 		// 查找传入的数据从哪里开始找不到对应的Term了
 		ci := l.findConflict(ents)
 		switch {
-		// 如果找不到这样的数据，或者找到的数据索引小于committed，都说明传入的数据是错误的
 		case ci == 0:
 		case ci <= l.committed:
+			// 找到的数据索引小于committed，都说明传入的数据是错误的
 			l.logger.Panicf("entry %d conflict with committed entry [committed(%d)]", ci, l.committed)
 		default:
-			// 正常的情况下来到这里
+			// ci > 0的情况下来到这里
 			offset := index + 1
 			// 从查找到的数据索引开始，将这之后的数据放入到unstable存储中
 			l.append(ents[ci-offset:]...)
@@ -176,15 +178,19 @@ func (l *raftLog) hasNextEnts() bool {
 
 func (l *raftLog) snapshot() (pb.Snapshot, error) {
 	if l.unstable.snapshot != nil {
+		// 如果没有保存的数据有快照，就返回
 		return *l.unstable.snapshot, nil
 	}
+	// 否则返回持久化存储的快照数据
 	return l.storage.Snapshot()
 }
 
 func (l *raftLog) firstIndex() uint64 {
+	// 首先尝试在未持久化数据中看有没有快照数据，存在的情况下那个firstIndex更小
 	if i, ok := l.unstable.maybeFirstIndex(); ok {
 		return i
 	}
+	// 否则才返回持久化数据的firsttIndex
 	index, err := l.storage.FirstIndex()
 	if err != nil {
 		panic(err) // TODO(bdarnell)
@@ -295,7 +301,7 @@ func (l *raftLog) allEntries() []pb.Entry {
 // later term is more up-to-date. If the logs end with the same term, then
 // whichever log has the larger lastIndex is more up-to-date. If the logs are
 // the same, the given log is up-to-date.
-// 判断是否更新：1）term是否更大 2）term相同的情况下，索引是否更大
+// 判断是否比当前节点的日志更新：1）term是否更大 2）term相同的情况下，索引是否更大
 func (l *raftLog) isUpToDate(lasti, term uint64) bool {
 	return term > l.lastTerm() || (term == l.lastTerm() && lasti >= l.lastIndex())
 }
@@ -336,6 +342,9 @@ func (l *raftLog) slice(lo, hi, maxSize uint64) ([]pb.Entry, error) {
 	}
 	var ents []pb.Entry
 	if lo < l.unstable.offset {
+		// lo 小于unstable的offset，说明前半部分在持久化的storage中
+
+		// 注意传入storage.Entries的hi参数取hi和unstable offset的较小值
 		storedEnts, err := l.storage.Entries(lo, min(hi, l.unstable.offset), maxSize)
 		if err == ErrCompacted {
 			return nil, err
@@ -347,12 +356,15 @@ func (l *raftLog) slice(lo, hi, maxSize uint64) ([]pb.Entry, error) {
 
 		// check if ents has reached the size limitation
 		if uint64(len(storedEnts)) < min(hi, l.unstable.offset)-lo {
+
 			return storedEnts, nil
 		}
 
 		ents = storedEnts
 	}
+
 	if hi > l.unstable.offset {
+		// hi大于unstable offset，说明后半部分在unstable中取得
 		unstable := l.unstable.slice(max(lo, l.unstable.offset), hi)
 		if len(ents) > 0 {
 			ents = append([]pb.Entry{}, ents...)

@@ -78,6 +78,7 @@ type MessageType int32
 
 const (
 	MsgHup            MessageType = 0
+	// MsgBeat不用于节点之间通信，仅用于leader内部HB时间到了让leader发送HB消息
 	MsgBeat           MessageType = 1
 	// 提交数据
 	MsgProp           MessageType = 2

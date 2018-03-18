@@ -20,10 +20,15 @@ import pb "github.com/coreos/etcd/raft/raftpb"
 // Note that unstable.offset may be less than the highest log
 // position in storage; this means that the next write to storage
 // might need to truncate the log before persisting unstable.entries.
+// unstable.entries[i]保存raft log position i+unstable.offset.
+// 其中offset可能小于持久化存储的最大索引偏移量，这意味着持久化存储中在offset的数据
+// 可能会被截断
 type unstable struct {
 	// the incoming unstable snapshot, if any.
+	// 保存还没有持久化的快照数据
 	snapshot *pb.Snapshot
 	// all entries that have not yet been written to storage.
+	// 还未持久化的数据
 	entries []pb.Entry
 	offset  uint64
 
@@ -114,7 +119,9 @@ func (u *unstable) stableSnapTo(i uint64) {
 func (u *unstable) restore(s pb.Snapshot) {
 	// 偏移量从快照索引之后开始，entries置空
 	u.offset = s.Metadata.Index + 1
+	// 清空entries数组
 	u.entries = nil
+	// 保存到snapshot中，注意这里保存的是指针，因为快照数据可能很大，如果值拷贝可能会涉及很多的数据
 	u.snapshot = &s
 }
 
