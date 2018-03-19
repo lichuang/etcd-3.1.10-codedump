@@ -21,8 +21,18 @@ import pb "github.com/coreos/etcd/raft/raftpb"
 // position in storage; this means that the next write to storage
 // might need to truncate the log before persisting unstable.entries.
 // unstable.entries[i]保存raft log position i+unstable.offset.
+
+// entry数组中位置为i的元素保存的数据位置在raft log位置i + offset位置的数据
 // 其中offset可能小于持久化存储的最大索引偏移量，这意味着持久化存储中在offset的数据
 // 可能会被截断
+
+// unstable用来保存还未持久化的数据，其可能保存在两个地方：
+// 快照数据snapshot或者entry数组
+// 两者中同时只可能存在其中之一
+// 快照数据用于开始启动时需要恢复的数据较多，所以一次性的使用快照数据来恢复
+// entry数组则是用于逐条数据进行接收时使用
+// 其中offset与entry数组配合着使用，可能会出现小于持久化最大索引偏移量的数据，所以需要做截断处理
+// 此时需要
 type unstable struct {
 	// the incoming unstable snapshot, if any.
 	// 保存还没有持久化的快照数据
@@ -38,6 +48,9 @@ type unstable struct {
 // maybeFirstIndex returns the index of the first possible entry in entries
 // if it has a snapshot.
 // 只有在快照存在的情况下，返回快照中的meta数据
+// 注意到与取lastIndex值不同的是，firstindex只会从快照中尝试。
+// 这是因为快照中的数据用于刚启动时，此时可能是最早的index，
+// 而entry数组存在数据时，持久化中已经有数据了，此时不可能从entry数组中取firstindex
 func (u *unstable) maybeFirstIndex() (uint64, bool) {
 	if u.snapshot != nil {
 		return u.snapshot.Metadata.Index + 1, true
@@ -100,7 +113,7 @@ func (u *unstable) stableTo(i, t uint64) {
 	// an unstable entry.
 	// 只有在term相同，同时索引大于等于当前offset的情况下
 	if gt == t && i >= u.offset {
-		// 将entries缩容，从i开始
+		// 因为前面的数据被持久化了，所以将entries缩容，从i开始
 		u.entries = u.entries[i+1-u.offset:]
 		// offset也要从i开始
 		u.offset = i + 1
@@ -126,6 +139,7 @@ func (u *unstable) restore(s pb.Snapshot) {
 }
 
 // 传入entries，可能会导致原先数据的截断或者添加操作
+// 这就是最开始注释中说明的offset可能比持久化索引小的情况，需要做截断
 func (u *unstable) truncateAndAppend(ents []pb.Entry) {
 	// 先拿到这些数据的第一个索引
 	after := ents[0].Index

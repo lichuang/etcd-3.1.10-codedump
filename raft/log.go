@@ -81,7 +81,7 @@ func (l *raftLog) String() string {
 
 // maybeAppend returns (0, false) if the entries cannot be appended. Otherwise,
 // it returns (last index of new entries, true).
-// 尝试添加一条日志，如果不能添加则返回(0,false)，否则返回(新的日志的索引,true)
+// 尝试添加一组日志，如果不能添加则返回(0,false)，否则返回(新的日志的索引,true)
 func (l *raftLog) maybeAppend(index, logTerm, committed uint64, ents ...pb.Entry) (lastnewi uint64, ok bool) {
 	if l.matchTerm(index, logTerm) {
 		// 首先需要保证传入的index和logTerm能匹配的上才能走入这里，否则直接返回false
