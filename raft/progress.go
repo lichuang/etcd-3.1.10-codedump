@@ -122,6 +122,7 @@ func (pr *Progress) becomeSnapshot(snapshoti uint64) {
 
 // maybeUpdate returns false if the given n index comes from an outdated message.
 // Otherwise it updates the progress and returns true.
+// 收到appresp的成功应答之后，leader更新节点的索引数据
 // 如果传入的n小于等于当前的match索引，则索引就不会更新，返回false；否则更新索引返回true
 func (pr *Progress) maybeUpdate(n uint64) bool {
 	var updated bool
@@ -140,7 +141,7 @@ func (pr *Progress) optimisticUpdate(n uint64) { pr.Next = n + 1 }
 
 // maybeDecrTo returns false if the given to index comes from an out of order message.
 // Otherwise it decreases the progress next index to min(rejected, last) and returns true.
-// rejected是拒绝该append消息时的索引，last是该节点的最后一条日志索引
+// rejected是拒绝该append消息时的索引，last是拒绝该消息的节点的最后一条日志索引
 func (pr *Progress) maybeDecrTo(rejected, last uint64) bool {
 	if pr.State == ProgressStateReplicate {	// 如果当前在接收副本状态
 		// the rejection must be stale if the progress has matched and "rejected"
@@ -178,6 +179,10 @@ func (pr *Progress) resume() { pr.Paused = false }
 // paused. A node may be paused because it has rejected recent
 // MsgApps, is currently waiting for a snapshot, or has reached the
 // MaxInflightMsgs limit.
+// ispause在以下情况中返回true：
+// 1）等待接收快照
+// 2) inflight数组已满，需要进行限流
+// 3) 进入ProgressStateProbe状态，这种状态说明最近拒绝了msgapps消息
 func (pr *Progress) IsPaused() bool {
 	switch pr.State {
 	case ProgressStateProbe:
@@ -198,6 +203,7 @@ func (pr *Progress) snapshotFailure() { pr.PendingSnapshot = 0 }
 // needSnapshotAbort returns true if snapshot progress's Match
 // is equal or higher than the pendingSnapshot.
 // 可以中断快照的情况：当前为接收快照，同时match已经大于等于快照索引
+// 因为match已经大于快照索引了，所以这部分快照数据可以不接收了，也就是可以被中断的快照操作
 func (pr *Progress) needSnapshotAbort() bool {
 	return pr.State == ProgressStateSnapshot && pr.Match >= pr.PendingSnapshot
 }
@@ -208,11 +214,14 @@ func (pr *Progress) String() string {
 
 type inflights struct {
 	// the starting index in the buffer
+	// 数组中的起始索引
 	start int
 	// number of inflights in the buffer
+	// 数组中的数据量
 	count int
 
 	// the size of the buffer
+	// 数组大小
 	size int
 
 	// buffer contains the index of the last entry

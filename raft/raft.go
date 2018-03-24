@@ -223,7 +223,7 @@ type raft struct {
 
 	state StateType
 
-	// 该map存放哪些节点进行了投票
+	// 该map存放哪些节点投票给了本节点
 	votes map[uint64]bool
 
 	msgs []pb.Message
@@ -367,6 +367,7 @@ func (r *raft) send(m pb.Message) {
 		// proposals are a way to forward to the leader and
 		// should be treated as local message.
 		// MsgReadIndex is also forwarded to leader.
+		// prop消息和readindex消息不需要带上term参数
 		if m.Type != pb.MsgProp && m.Type != pb.MsgReadIndex {
 			m.Term = r.Term
 		}
@@ -419,8 +420,7 @@ func (r *raft) sendAppend(to uint64) {
 		// 该节点进入接收快照的状态
 		pr.becomeSnapshot(sindex)
 		r.logger.Debugf("%x paused sending replication messages to %x [%s]", r.id, to, pr)
-	} else {
-		// 否则就是简单的发送append消息
+	} else { // 否则就是简单的发送append消息
 		m.Type = pb.MsgApp
 		m.Index = pr.Next - 1
 		m.LogTerm = term
@@ -438,6 +438,7 @@ func (r *raft) sendAppend(to uint64) {
 				pr.optimisticUpdate(last)
 				pr.ins.add(last)
 			case ProgressStateProbe:
+				// 在probe状态时，每次只能发送一条app消息
 				pr.pause()
 			default:
 				r.logger.Panicf("%x is sending append in unhandled state %s", r.id, pr.State)
@@ -631,6 +632,7 @@ func (r *raft) becomePreCandidate() {
 	// Becoming a pre-candidate changes our step functions and state,
 	// but doesn't change anything else. In particular it does not increase
 	// r.Term or change r.Vote.
+	// prevote不会递增term，也不会先进行投票，而是等prevote结果出来再进行决定
 	r.step = stepCandidate
 	r.tick = r.tickElection
 	r.state = StatePreCandidate
@@ -673,7 +675,6 @@ func (r *raft) campaign(t CampaignType) {
 		r.becomePreCandidate()
 		voteMsg = pb.MsgPreVote
 		// PreVote RPCs are sent for the next term before we've incremented r.Term.
-		// 这里为什么是Term+1？
 		term = r.Term + 1
 	} else {
 		r.becomeCandidate()
@@ -732,6 +733,8 @@ func (r *raft) poll(id uint64, t pb.MessageType, v bool) (granted int) {
 
 // raft的状态机
 func (r *raft) Step(m pb.Message) error {
+	r.logger.Infof("!!!!!!from:%d, to:%d, type:%s", m.From, m.To, m.Type)
+
 	// Handle the message term, which may result in our stepping down to a follower.
 	switch {
 	case m.Term == 0:
@@ -831,8 +834,9 @@ func (r *raft) Step(m pb.Message) error {
 		// The m.Term > r.Term clause is for MsgPreVote. For MsgVote m.Term should
 		// always equal r.Term.
 		if (r.Vote == None || m.Term > r.Term || r.Vote == m.From) && r.raftLog.isUpToDate(m.Index, m.LogTerm) {
-			// 如果当前没有给任何节点投票（r.Vote == None）或者投票的节点term大于本节点的（m.Term > r.Term）或者是之前已经投票的节点（r.Vote == m.From）
-			// 同时还满足该节点的消息是最新的（r.raftLog.isUpToDate(m.Index, m.LogTerm)），那么就投票给这个节点
+			// 如果当前没有给任何节点投票（r.Vote == None）或者投票的节点term大于本节点的（m.Term > r.Term，这种情况出现在prevote的状态下）
+			// 或者是之前已经投票的节点（r.Vote == m.From）
+			// 同时还满足该节点的消息是最新的（r.raftLog.isUpToDate(m.Index, m.LogTerm)），那么就接收这个节点的投票
 			r.logger.Infof("%x [logterm: %d, index: %d, vote: %x] cast %s for %x [logterm: %d, index: %d] at term %d",
 				r.id, r.raftLog.lastTerm(), r.raftLog.lastIndex(), r.Vote, m.Type, m.From, m.LogTerm, m.Index, r.Term)
 			r.send(pb.Message{To: m.From, Type: voteRespMsgType(m.Type)})
@@ -962,6 +966,7 @@ func stepLeader(r *raft, m pb.Message) {
 		if m.Reject {	// 如果拒绝了append消息，说明term、index不匹配
 			r.logger.Debugf("%x received msgApp rejection(lastindex: %d) from %x for index %d",
 				r.id, m.RejectHint, m.From, m.Index)
+			// rejecthist带来的是拒绝该app请求的节点，其最大日志的索引
 			if pr.maybeDecrTo(m.Index, m.RejectHint) {	// 尝试回退关于该节点的Match、Next索引
 				r.logger.Debugf("%x decreased progress of %x to [%s]", r.id, m.From, pr)
 				if pr.State == ProgressStateReplicate {
