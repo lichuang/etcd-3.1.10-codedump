@@ -29,7 +29,9 @@ type ReadState struct {
 }
 
 type readIndexStatus struct {
+	// 保存原始的readIndex请求消息
 	req   pb.Message
+	// 保存收到该readIndex请求时的leader commit索引
 	index uint64
 	// 保存有什么节点进行了应答
 	acks  map[uint64]struct{}
@@ -54,9 +56,9 @@ func newReadOnly(option ReadOnlyOption) *readOnly {
 // `index` is the commit index of the raft state machine when it received
 // the read only request.
 // `m` is the original read only request message from the local or remote node.
-// 添加一个新的请求
 func (ro *readOnly) addRequest(index uint64, m pb.Message) {
 	ctx := string(m.Entries[0].Data)
+	// 判断是否重复添加
 	if _, ok := ro.pendingReadIndex[ctx]; ok {
 		return
 	}

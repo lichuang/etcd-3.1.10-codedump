@@ -17,6 +17,10 @@ package raft
 import "fmt"
 
 const (
+	// 探测状态用于检查该节点的网络情况，只有在应答leader的app信息之后，才会从probe切换到replicate状态
+	// 在probe状态下，leader一次只能向这个节点发送一条app信息，在应答这条app信息之前，不能向这个节点继续发送其他app信息。
+	// 在网络不可用，或者拒绝了某条app信息之后，都会切换到这个状态
+	// 这个状态也是节点的初始状态
 	ProgressStateProbe ProgressStateType = iota
 	ProgressStateReplicate
 	ProgressStateSnapshot

@@ -51,6 +51,7 @@ func TestLeaderUpdateTermFromMessage(t *testing.T) {
 // value. If a candidate or leader discovers that its term is out of date,
 // it immediately reverts to follower state.
 // Reference: section 5.1
+// 收到更大term提交的消息时，切换到follower状态
 func testUpdateTermFromMessage(t *testing.T, state StateType) {
 	r := newTestRaft(1, []uint64{1, 2, 3}, 10, 1, NewMemoryStorage())
 	switch state {
@@ -77,6 +78,7 @@ func testUpdateTermFromMessage(t *testing.T, state StateType) {
 // a stale term number, it rejects the request.
 // Our implementation ignores the request instead.
 // Reference: section 5.1
+// 收到过期的term消息时，该消息不会被处理
 func TestRejectStaleTermMessage(t *testing.T) {
 	called := false
 	fakeStep := func(r *raft, m pb.Message) {
@@ -95,6 +97,7 @@ func TestRejectStaleTermMessage(t *testing.T) {
 
 // TestStartAsFollower tests that when servers start up, they begin as followers.
 // Reference: section 5.2
+// 服务启动时是follower状态
 func TestStartAsFollower(t *testing.T) {
 	r := newTestRaft(1, []uint64{1, 2, 3}, 10, 1, NewMemoryStorage())
 	if r.state != StateFollower {
@@ -106,6 +109,7 @@ func TestStartAsFollower(t *testing.T) {
 // it will send a msgApp with m.Index = 0, m.LogTerm=0 and empty entries as
 // heartbeat to all followers.
 // Reference: section 5.2
+// leader在tick时会向follower发送HB消息
 func TestLeaderBcastBeat(t *testing.T) {
 	// heartbeat interval
 	hi := 1
@@ -148,6 +152,9 @@ func TestCandidateStartNewElection(t *testing.T) {
 // start a new election by incrementing its term and initiating another
 // round of RequestVote RPCs.
 // Reference: section 5.2
+// 当一个follower在选举超时内没有收到leader的消息，那么将递增term并且切换到candidate状态并且向其他server
+// 发送MsgVote消息选举自己为leader
+// 同样的，一个candidate在没有收到过半选票时，也会递增term进行下一轮选举，直到出现了leader
 func testNonleaderStartElection(t *testing.T, state StateType) {
 	// election timeout
 	et := 10
@@ -159,6 +166,7 @@ func testNonleaderStartElection(t *testing.T, state StateType) {
 		r.becomeCandidate()
 	}
 
+	// 模拟超时的场景
 	for i := 1; i < 2*et; i++ {
 		r.tick()
 	}
@@ -189,6 +197,11 @@ func testNonleaderStartElection(t *testing.T, state StateType) {
 // b) it loses the election
 // c) it is unclear about the result
 // Reference: section 5.2
+// 测试不同场景下选举的情况：
+// a) 赢得超过半数选票成为leader
+// b) 超过半数拒绝，转换为follower
+// c) 没有赢得半数投票，仍然在candidate状态
+// 需要区分以上两种bc情况：情况b是明确拒绝，c是没有收到选票。
 func TestLeaderElectionInOneRoundRPC(t *testing.T) {
 	tests := []struct {
 		size  int
@@ -234,6 +247,7 @@ func TestLeaderElectionInOneRoundRPC(t *testing.T) {
 // TestFollowerVote tests that each follower will vote for at most one
 // candidate in a given term, on a first-come-first-served basis.
 // Reference: section 5.2
+// 测试每次选举只能进行一次投票，先到先得
 func TestFollowerVote(t *testing.T) {
 	tests := []struct {
 		vote    uint64
@@ -268,6 +282,7 @@ func TestFollowerVote(t *testing.T) {
 // to be leader whose term is at least as large as the candidate's current term,
 // it recognizes the leader as legitimate and returns to follower state.
 // Reference: section 5.2
+// 验证在选举期间，收到其他节点发送过来的消息，且消息中的term至少比当前选举时的term大，那么将返回到follower状态
 func TestCandidateFallback(t *testing.T) {
 	tests := []pb.Message{
 		{From: 2, To: 1, Term: 1, Type: pb.MsgApp},
@@ -305,6 +320,7 @@ func TestCandidateElectionTimeoutRandomized(t *testing.T) {
 // testNonleaderElectionTimeoutRandomized tests that election timeout for
 // follower or candidate is randomized.
 // Reference: section 5.2
+// 验证follower或者candidate的选举超时时间是随机的
 func testNonleaderElectionTimeoutRandomized(t *testing.T, state StateType) {
 	et := 10
 	r := newTestRaft(1, []uint64{1, 2, 3}, et, 1, NewMemoryStorage())
@@ -347,6 +363,7 @@ func TestCandidatesElectionTimeoutNonconflict(t *testing.T) {
 // single server(follower or candidate) will time out, which reduces the
 // likelihood of split vote in the new election.
 // Reference: section 5.2
+// 验证在绝大多数情况下，只有可能有一个server超时，避免出现了脑裂的情况
 func testNonleadersElectionTimeoutNonconflict(t *testing.T, state StateType) {
 	et := 10
 	size := 5
@@ -381,6 +398,7 @@ func testNonleadersElectionTimeoutNonconflict(t *testing.T, state StateType) {
 		}
 	}
 
+	// 同时有两个以上节点超时的比例，不超过千分之0.3
 	if g := float64(conflicts) / 1000; g > 0.3 {
 		t.Errorf("probability of conflicts = %v, want <= 0.3", g)
 	}
@@ -394,6 +412,8 @@ func testNonleadersElectionTimeoutNonconflict(t *testing.T, state StateType) {
 // the new entries.
 // Also, it writes the new entry into stable storage.
 // Reference: section 5.3
+// 验证leader收到proposal消息时，将向其他节点发送Append消息，该消息的
+// TODO
 func TestLeaderStartReplication(t *testing.T) {
 	s := NewMemoryStorage()
 	r := newTestRaft(1, []uint64{1, 2, 3}, 10, 1, s)
@@ -513,6 +533,8 @@ func TestLeaderAcknowledgeCommit(t *testing.T) {
 // entries created by previous leaders.
 // Also, it applies the entry to its local state machine (in log order).
 // Reference: section 5.3
+// 验证当leader commit一条日志条目，在这之前的所有日志都会被提交，包括以前任期内提交的日志
+// 而这些提交的日志排序是根据index来进行排序的
 func TestLeaderCommitPrecedingEntries(t *testing.T) {
 	tests := [][]pb.Entry{
 		{},
@@ -522,19 +544,26 @@ func TestLeaderCommitPrecedingEntries(t *testing.T) {
 	}
 	for i, tt := range tests {
 		storage := NewMemoryStorage()
+		// 模拟storage中已经存在了一些日志条目
 		storage.Append(tt)
 		r := newTestRaft(1, []uint64{1, 2, 3}, 10, 1, storage)
+		// 模拟启动时以任期2开始
 		r.loadState(pb.HardState{Term: 2})
+		// 成为leader
 		r.becomeCandidate()
 		r.becomeLeader()
+		// 成为leader之后提交一条消息
 		r.Step(pb.Message{From: 1, To: 1, Type: pb.MsgProp, Entries: []pb.Entry{{Data: []byte("some data")}}})
 
+		// 模拟集群中其他机器都同意了提交
 		for _, m := range r.readMessages() {
 			r.Step(acceptAndReply(m))
 		}
 
 		li := uint64(len(tt))
+		// 日志数组为：前面通过storage.Append添加进去的测试日志（代表在任期之前的日志）、成为leader之后提交的一条空日志、调用Step提交的数据
 		wents := append(tt, pb.Entry{Term: 3, Index: li + 1}, pb.Entry{Term: 3, Index: li + 2, Data: []byte("some data")})
+		// 验证提交但是还没有apply的日志是不是正确
 		if g := r.raftLog.nextEnts(); !reflect.DeepEqual(g, wents) {
 			t.Errorf("#%d: ents = %+v, want %+v", i, g, wents)
 		}
@@ -544,6 +573,8 @@ func TestLeaderCommitPrecedingEntries(t *testing.T) {
 // TestFollowerCommitEntry tests that once a follower learns that a log entry
 // is committed, it applies the entry to its local state machine (in log order).
 // Reference: section 5.3
+// TODO
+// 验证当follower收到来自leader的append消息时，apply日志条目的顺序
 func TestFollowerCommitEntry(t *testing.T) {
 	tests := []struct {
 		ents   []pb.Entry
@@ -642,6 +673,8 @@ func TestFollowerCheckMsgApp(t *testing.T) {
 // and append any new entries not already in the log.
 // Also, it writes the new entry into stable storage.
 // Reference: section 5.3
+// 验证当follower收到合法的Append请求时，将删除冲突的日志条目，然后将还没有的日志条目添加进来
+// TODO
 func TestFollowerAppendEntries(t *testing.T) {
 	tests := []struct {
 		index, term uint64

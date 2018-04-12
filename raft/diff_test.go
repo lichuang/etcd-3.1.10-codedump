@@ -58,7 +58,8 @@ func mustTemp(pre, body string) string {
 func ltoa(l *raftLog) string {
 	s := fmt.Sprintf("committed: %d\n", l.committed)
 	s += fmt.Sprintf("applied:  %d\n", l.applied)
-	for i, e := range l.allEntries() {
+	ents := l.allEntries()
+	for i, e := range ents {
 		s += fmt.Sprintf("#%d: %+v\n", i, e)
 	}
 	return s

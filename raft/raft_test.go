@@ -617,41 +617,51 @@ func TestSingleNodeCommit(t *testing.T) {
 // filtered.
 func TestCannotCommitWithoutNewTermEntry(t *testing.T) {
 	tt := newNetwork(nil, nil, nil, nil, nil)
+	// 节点1成为leader
 	tt.send(pb.Message{From: 1, To: 1, Type: pb.MsgHup})
 
 	// 0 cannot reach 2,3,4
+	// 中断1与3，4，5节点的通信
 	tt.cut(1, 3)
 	tt.cut(1, 4)
 	tt.cut(1, 5)
 
+	// 发出提交数据的请求
 	tt.send(pb.Message{From: 1, To: 1, Type: pb.MsgProp, Entries: []pb.Entry{{Data: []byte("some data")}}})
 	tt.send(pb.Message{From: 1, To: 1, Type: pb.MsgProp, Entries: []pb.Entry{{Data: []byte("some data")}}})
 
 	sm := tt.peers[1].(*raft)
+	// 由于中断了与其他三个节点的通信，因此前面提交的值不能被commit
 	if sm.raftLog.committed != 1 {
 		t.Errorf("committed = %d, want %d", sm.raftLog.committed, 1)
 	}
 
+	// 恢复网络
 	// network recovery
 	tt.recover()
 	// avoid committing ChangeTerm proposal
+	// 忽略append类型的请求数据
 	tt.ignore(pb.MsgApp)
 
 	// elect 2 as the new leader with term 2
+	// 节点2成为新的leader
 	tt.send(pb.Message{From: 2, To: 2, Type: pb.MsgHup})
 
 	// no log entries from previous term should be committed
 	sm = tt.peers[2].(*raft)
+	// 但是此时commit索引还是1
 	if sm.raftLog.committed != 1 {
 		t.Errorf("committed = %d, want %d", sm.raftLog.committed, 1)
 	}
 
+	// 网络恢复
 	tt.recover()
 	// send heartbeat; reset wait
 	tt.send(pb.Message{From: 2, To: 2, Type: pb.MsgBeat})
 	// append an entry at current term
 	tt.send(pb.Message{From: 2, To: 2, Type: pb.MsgProp, Entries: []pb.Entry{{Data: []byte("some data")}}})
 	// expect the committed to be advanced
+	// 此时节点的commit索引变成5
 	if sm.raftLog.committed != 5 {
 		t.Errorf("committed = %d, want %d", sm.raftLog.committed, 5)
 	}
@@ -824,14 +834,18 @@ func TestDuelingPreCandidates(t *testing.T) {
 	}
 }
 
+// 这个用例模拟某个节点网络隔离，重新回到集群时还是旧的master
 func TestCandidateConcede(t *testing.T) {
 	tt := newNetwork(nil, nil, nil)
+	// 隔离节点1
 	tt.isolate(1)
 
+	// 3和1同时发起选举请求
 	tt.send(pb.Message{From: 1, To: 1, Type: pb.MsgHup})
 	tt.send(pb.Message{From: 3, To: 3, Type: pb.MsgHup})
 
 	// heal the partition
+	// 恢复网络
 	tt.recover()
 	// send heartbeat; reset wait
 	tt.send(pb.Message{From: 3, To: 3, Type: pb.MsgBeat})
@@ -888,15 +902,21 @@ func TestSingleNodePreCandidate(t *testing.T) {
 	}
 }
 
+// 该用例测试旧的leader提交的数据不会被通过
 func TestOldMessages(t *testing.T) {
 	tt := newNetwork(nil, nil, nil)
 	// make 0 leader @ term 3
+	// 1成为term 1的leader
 	tt.send(pb.Message{From: 1, To: 1, Type: pb.MsgHup})
+	// 2成为term 2的leader
 	tt.send(pb.Message{From: 2, To: 2, Type: pb.MsgHup})
+	// 1成为term 3的leader
 	tt.send(pb.Message{From: 1, To: 1, Type: pb.MsgHup})
 	// pretend we're an old leader trying to make progress; this entry is expected to be ignored.
+	// 模拟2使用term 2发送append数据，但是不会被通过
 	tt.send(pb.Message{From: 2, To: 1, Type: pb.MsgApp, Term: 2, Entries: []pb.Entry{{Index: 3, Term: 2}}})
 	// commit a new entry
+	// 1提交的值会被通过，注意这里没有写term，但是会被填充为3
 	tt.send(pb.Message{From: 1, To: 1, Type: pb.MsgProp, Entries: []pb.Entry{{Data: []byte("somedata")}}})
 
 	ilog := &raftLog{
@@ -1308,11 +1328,13 @@ func TestMsgAppRespWaitReset(t *testing.T) {
 	sm.readMessages()
 
 	// Node 2 acks the first entry, making it committed.
+	// 节点2应答app信息，这样就不再是probe状态了
 	sm.Step(pb.Message{
 		From:  2,
 		Type:  pb.MsgAppResp,
 		Index: 1,
 	})
+	// 在节点2应答之后，committed就不再是1了
 	if sm.raftLog.committed != 1 {
 		t.Fatalf("expected committed to be 1, got %d", sm.raftLog.committed)
 	}
@@ -1320,6 +1342,7 @@ func TestMsgAppRespWaitReset(t *testing.T) {
 	sm.readMessages()
 
 	// A new command is now proposed on node 1.
+	// 提交一个新的值
 	sm.Step(pb.Message{
 		From:    1,
 		Type:    pb.MsgProp,
@@ -1332,6 +1355,8 @@ func TestMsgAppRespWaitReset(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 message, got %d: %+v", len(msgs), msgs)
 	}
+	// 由于节点3没有应答第一条app信息，因此此时不会往节点3继续发送app信息
+	// 因此这里的消息只发送给节点2了
 	if msgs[0].Type != pb.MsgApp || msgs[0].To != 2 {
 		t.Errorf("expected MsgApp to node 2, got %v to %d", msgs[0].Type, msgs[0].To)
 	}
@@ -1340,6 +1365,7 @@ func TestMsgAppRespWaitReset(t *testing.T) {
 	}
 
 	// Now Node 3 acks the first entry. This releases the wait and entry 2 is sent.
+	// 模拟节点3应答索引1的app信息
 	sm.Step(pb.Message{
 		From:  3,
 		Type:  pb.MsgAppResp,
@@ -1349,6 +1375,7 @@ func TestMsgAppRespWaitReset(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 message, got %d: %+v", len(msgs), msgs)
 	}
+	// 此时可以往节点3继续发送前面提交的值了
 	if msgs[0].Type != pb.MsgApp || msgs[0].To != 3 {
 		t.Errorf("expected MsgApp to node 3, got %v to %d", msgs[0].Type, msgs[0].To)
 	}
@@ -1612,6 +1639,7 @@ func TestLeaderSupersedingWithCheckQuorum(t *testing.T) {
 	nt.send(pb.Message{From: 3, To: 3, Type: pb.MsgHup})
 
 	// Peer b rejected c's vote since its electionElapsed had not reached to electionTimeout
+	// 此时b节点还没有选举超时，所以拒绝了C的投票
 	if c.state != StateCandidate {
 		t.Errorf("state = %s, want %s", c.state, StateCandidate)
 	}
@@ -1642,6 +1670,7 @@ func TestLeaderElectionWithCheckQuorum(t *testing.T) {
 
 	// Immediately after creation, votes are cast regardless of the
 	// election timeout.
+	// 初次投票选举，都会成功，不管是否投票超时
 	nt.send(pb.Message{From: 1, To: 1, Type: pb.MsgHup})
 
 	if a.state != StateLeader {
@@ -1989,9 +2018,13 @@ func TestLeaderAppResp(t *testing.T) {
 		windex     uint64
 		wcommitted uint64
 	}{
+		// index为3，大于当前leader的最大index，同时拒绝了app消息，
 		{3, true, 0, 3, 0, 0, 0},  // stale resp; no replies
+		// index为2，拒绝了app消息，因此递减了next索引为2，同时发送app消息过去，这个app消息的index为1，同时由于拒绝了，所以commit还是为0
 		{2, true, 0, 2, 1, 1, 0},  // denied resp; leader does not commit; decrease next and send probing msg
+		// 接收了app消息，修改match为2，next递增到下一个索引，同时向其他两个节点广播app消息
 		{2, false, 2, 4, 2, 2, 2}, // accept resp; leader commits; broadcast with commit index
+		// 简答的应答，并没有该节点索引的更新
 		{0, false, 0, 3, 0, 0, 0}, // ignore heartbeat replies
 	}
 
@@ -2034,6 +2067,7 @@ func TestLeaderAppResp(t *testing.T) {
 
 // When the leader receives a heartbeat tick, it should
 // send a MsgApp with m.Index = 0, m.LogTerm=0 and empty entries.
+// 这个用例用于测试，不同的follower的match和next不同，导致leader发过去的HB消息的commit也不同
 func TestBcastBeat(t *testing.T) {
 	offset := uint64(1000)
 	// make a state machine with log.offset = 1000
@@ -3163,6 +3197,7 @@ func (nw *network) cut(one, other uint64) {
 	nw.drop(other, one, 1)
 }
 
+// 模拟某个节点网络隔离，即不与其他任何节点进行通信
 func (nw *network) isolate(id uint64) {
 	for i := 0; i < len(nw.peers); i++ {
 		nid := uint64(i) + 1

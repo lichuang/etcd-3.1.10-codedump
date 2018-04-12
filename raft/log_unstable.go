@@ -115,6 +115,7 @@ func (u *unstable) stableTo(i, t uint64) {
 	if gt == t && i >= u.offset {
 		// 因为前面的数据被持久化了，所以将entries缩容，从i开始
 		u.entries = u.entries[i+1-u.offset:]
+		u.logger.Infof("stable to %d, entries size: %d", i, len(u.entries))
 		// offset也要从i开始
 		u.offset = i + 1
 	}

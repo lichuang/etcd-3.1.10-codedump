@@ -381,6 +381,7 @@ func (r *raft) send(m pb.Message) {
 func (r *raft) sendAppend(to uint64) {
 	pr := r.prs[to]
 	if pr.IsPaused() {
+		r.logger.Infof("node %d paused", to)
 		return
 	}
 	m := pb.Message{}
@@ -733,8 +734,11 @@ func (r *raft) poll(id uint64, t pb.MessageType, v bool) (granted int) {
 
 // raft的状态机
 func (r *raft) Step(m pb.Message) error {
-	r.logger.Infof("!!!!!!from:%d, to:%d, type:%s", m.From, m.To, m.Type)
+	r.logger.Infof("from:%d, to:%d, type:%s, term:%d, state:%v", m.From, m.To, m.Type, r.Term, r.state)
 
+	if (m.From == 1 && m.To == 3 && r.state == StateCandidate && m.Type == pb.MsgHeartbeat) {
+		r.logger.Infof("test:%s", "test")
+	}
 	// Handle the message term, which may result in our stepping down to a follower.
 	switch {
 	case m.Term == 0:
@@ -792,12 +796,14 @@ func (r *raft) Step(m pb.Message) error {
 			// removed node will send MsgVotes (or MsgPreVotes) which will be ignored,
 			// but it will not receive MsgApp or MsgHeartbeat, so it will not create
 			// disruptive term increases
+			// 此时收到了一个更小的term的节点发出的HB或者APP消息，于是应答一个appresp消息，试图纠正它的状态
 			r.send(pb.Message{To: m.From, Type: pb.MsgAppResp})
 		} else {
 			// ignore other cases
 			r.logger.Infof("%x [term: %d] ignored a %s message with lower term from %x [term: %d]",
 				r.id, r.Term, m.Type, m.From, m.Term)
 		}
+		// 在消息的term小于当前节点的term时，不往下处理直接返回了
 		return nil
 	}
 
@@ -930,7 +936,7 @@ func stepLeader(r *raft, m pb.Message) {
 			case ReadOnlySafe:
 				// 把读请求到来时的committed索引保存下来
 				r.readOnly.addRequest(r.raftLog.committed, m)
-				// 广播消息出去，其中消息的CTX是该请求数据的第一条data
+				// 广播消息出去，其中消息的CTX是该读请求的唯一标识
 				// 在应答是Context要原样返回，将使用这个ctx操作readOnly相关数据
 				r.bcastHeartbeatWithCtx(m.Entries[0].Data)
 			case ReadOnlyLeaseBased:
@@ -1003,6 +1009,7 @@ func stepLeader(r *raft, m pb.Message) {
 				}
 				// Transfer leadership is in progress.
 				if m.From == r.leadTransferee && pr.Match == r.raftLog.lastIndex() {
+					// 要迁移过去的新leader，其日志已经追上了旧的leader
 					r.logger.Infof("%x sent MsgTimeoutNow to %x after received MsgAppResp", r.id, m.From)
 					r.sendTimeoutNow(m.From)
 				}
@@ -1230,6 +1237,7 @@ func (r *raft) handleAppendEntries(m pb.Message) {
 		return
 	}
 
+	r.logger.Infof("%x -> %x index %d", m.From, r.id, m.Index)
 	// 尝试添加到日志模块中
 	if mlastIndex, ok := r.raftLog.maybeAppend(m.Index, m.LogTerm, m.Commit, m.Entries...); ok {
 		// 添加成功
@@ -1343,6 +1351,7 @@ func (r *raft) removeNode(id uint64) {
 	}
 	// If the removed node is the leadTransferee, then abort the leadership transferring.
 	if r.state == StateLeader && r.leadTransferee == id {
+		// 如果在leader迁移过程中发生了删除节点的操作，那么中断迁移leader流程
 		r.abortLeaderTransfer()
 	}
 }

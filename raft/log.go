@@ -219,6 +219,7 @@ func (l *raftLog) commitTo(tocommit uint64) {
 			l.logger.Panicf("tocommit(%d) is out of range [lastIndex(%d)]. Was the raft log corrupted, truncated, or lost?", tocommit, l.lastIndex())
 		}
 		l.committed = tocommit
+		l.logger.Infof("commit to %d", tocommit)
 	}
 }
 
@@ -356,7 +357,6 @@ func (l *raftLog) slice(lo, hi, maxSize uint64) ([]pb.Entry, error) {
 
 		// check if ents has reached the size limitation
 		if uint64(len(storedEnts)) < min(hi, l.unstable.offset)-lo {
-
 			return storedEnts, nil
 		}
 
