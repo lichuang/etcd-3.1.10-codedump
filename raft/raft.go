@@ -64,6 +64,7 @@ const (
 	// of the election when Config.PreVote is true).
 	campaignElection CampaignType = "CampaignElection"
 	// campaignTransfer represents the type of leader transfer
+	// 由于leader转让发起的竞选
 	campaignTransfer CampaignType = "CampaignTransfer"
 )
 
@@ -232,6 +233,7 @@ type raft struct {
 	lead uint64
 	// leadTransferee is id of the leader transfer target when its value is not zero.
 	// Follow the procedure defined in raft thesis 3.10.
+	// leader转让的目标节点id
 	leadTransferee uint64
 	// New configuration is ignored if there exists unapplied configuration.
 	// 标识当前还有没有applied的配置
@@ -749,12 +751,13 @@ func (r *raft) Step(m pb.Message) error {
 		if m.Type == pb.MsgVote || m.Type == pb.MsgPreVote {
 			// 如果收到的是投票类消息
 
-			// 是否强制要求进行
+			// 当context为campaignTransfer时表示强制要求进行竞选
 			force := bytes.Equal(m.Context, []byte(campaignTransfer))
 			// 是否在租约期以内
 			inLease := r.checkQuorum && r.lead != None && r.electionElapsed < r.electionTimeout
 			if !force && inLease {
 				// 如果非强制，而且又在租约期以内，就不做任何处理
+				// 非强制又在租约期内可以忽略选举消息，见论文的4.2.3，这是为了阻止已经离开集群的节点再次发起投票请求
 				// If a server receives a RequestVote request within the minimum election timeout
 				// of hearing from a current leader, it does not update its term or grant its vote
 				r.logger.Infof("%x [logterm: %d, index: %d, vote: %x] ignored %s from %x [logterm: %d, index: %d] at term %d: lease is not expired (remaining ticks: %d)",
@@ -1084,14 +1087,18 @@ func stepLeader(r *raft, m pb.Message) {
 		leadTransferee := m.From
 		lastLeadTransferee := r.leadTransferee
 		if lastLeadTransferee != None {
+			// 判断是否已经有相同节点的leader转让流程在进行中
 			if lastLeadTransferee == leadTransferee {
 				r.logger.Infof("%x [term %d] transfer leadership to %x is in progress, ignores request to same node %x",
 					r.id, r.Term, leadTransferee, leadTransferee)
+				// 如果是，直接返回
 				return
 			}
+			// 否则中断之前的转让流程
 			r.abortLeaderTransfer()
 			r.logger.Infof("%x [term %d] abort previous transferring leadership to %x", r.id, r.Term, lastLeadTransferee)
 		}
+		// 判断是否转让过来的leader是否本节点，如果是也直接返回，因为本节点已经是leader了
 		if leadTransferee == r.id {
 			r.logger.Debugf("%x is already leader. Ignored transferring leadership to self", r.id)
 			return
@@ -1102,9 +1109,11 @@ func stepLeader(r *raft, m pb.Message) {
 		r.electionElapsed = 0
 		r.leadTransferee = leadTransferee
 		if pr.Match == r.raftLog.lastIndex() {
+			// 如果日志已经匹配了，那么就发送timeoutnow协议过去
 			r.sendTimeoutNow(leadTransferee)
 			r.logger.Infof("%x sends MsgTimeoutNow to %x immediately as %x already has up-to-date log", r.id, leadTransferee, leadTransferee)
 		} else {
+			// 否则继续追加日志
 			r.sendAppend(leadTransferee)
 		}
 	}
@@ -1160,6 +1169,7 @@ func stepCandidate(r *raft, m pb.Message) {
 			r.becomeFollower(r.Term, None)
 		}
 	case pb.MsgTimeoutNow:
+		// candidate收到timeout指令忽略不处理
 		r.logger.Debugf("%x [term %d state %v] ignored MsgTimeoutNow from %x", r.id, r.Term, r.state, m.From)
 	}
 }
@@ -1202,7 +1212,7 @@ func stepFollower(r *raft, m pb.Message) {
 		m.To = r.lead
 		r.send(m)
 	case pb.MsgTimeoutNow:
-		if r.promotable() {
+		if r.promotable() {	// 如果本节点可以提升为leader，那么就发起新一轮的竞选
 			r.logger.Infof("%x [term %d] received MsgTimeoutNow from %x and starts an election to get leadership.", r.id, r.Term, m.From)
 			// Leadership transfers never use pre-vote even if r.preVote is true; we
 			// know we are not recovering from a partition so there is no need for the
@@ -1216,8 +1226,8 @@ func stepFollower(r *raft, m pb.Message) {
 			r.logger.Infof("%x no leader at term %d; dropping index reading msg", r.id, r.Term)
 			return
 		}
+		// 向leader转发此类型消息
 		m.To = r.lead
-		// 向leade redirect这类型的消息
 		r.send(m)
 	case pb.MsgReadIndexResp:
 		if len(m.Entries) != 1 {
@@ -1414,6 +1424,7 @@ func (r *raft) sendTimeoutNow(to uint64) {
 	r.send(pb.Message{To: to, Type: pb.MsgTimeoutNow})
 }
 
+// 中断leader转让流程
 func (r *raft) abortLeaderTransfer() {
 	r.leadTransferee = None
 }

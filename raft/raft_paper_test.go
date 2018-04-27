@@ -413,7 +413,6 @@ func testNonleadersElectionTimeoutNonconflict(t *testing.T, state StateType) {
 // Also, it writes the new entry into stable storage.
 // Reference: section 5.3
 // 验证leader收到proposal消息时，将向其他节点发送Append消息，该消息的
-// TODO
 func TestLeaderStartReplication(t *testing.T) {
 	s := NewMemoryStorage()
 	r := newTestRaft(1, []uint64{1, 2, 3}, 10, 1, s)
@@ -453,26 +452,33 @@ func TestLeaderStartReplication(t *testing.T) {
 // and it includes that index in future AppendEntries RPCs so that the other
 // servers eventually find out.
 // Reference: section 5.3
+// 验证当MsgProp消息被集群的半数以上节点通过时，leader将修改自己日志的commit索引值，然后向
+// 集群的其他节点发出MsgApp消息，对该通过的消息进行append，同时消息中会带上leader当前日志commit索引的信息
 func TestLeaderCommitEntry(t *testing.T) {
 	s := NewMemoryStorage()
 	r := newTestRaft(1, []uint64{1, 2, 3}, 10, 1, s)
+	// 成为leader
 	r.becomeCandidate()
 	r.becomeLeader()
 	commitNoopEntry(r, s)
+	// 得到当前日志的最后一条索引
 	li := r.raftLog.lastIndex()
+	// 提交一个新的值
 	r.Step(pb.Message{From: 1, To: 1, Type: pb.MsgProp, Entries: []pb.Entry{{Data: []byte("some data")}}})
-
+	// 模拟集群中其他节点都通过该提交
 	for _, m := range r.readMessages() {
 		r.Step(acceptAndReply(m))
 	}
-
+	// 验证提交完成之后，commit索引是前面保存的最后一条索引+1
 	if g := r.raftLog.committed; g != li+1 {
 		t.Errorf("committed = %d, want %d", g, li+1)
 	}
+	// 验证提交完成之后，leader上面日志数据
 	wents := []pb.Entry{{Index: li + 1, Term: 1, Data: []byte("some data")}}
 	if g := r.raftLog.nextEnts(); !reflect.DeepEqual(g, wents) {
 		t.Errorf("nextEnts = %+v, want %+v", g, wents)
 	}
+	// 验证向集群中其他节点发出了append消息，append刚刚提交成功的值，同时带上了commit索引信息
 	msgs := r.readMessages()
 	sort.Sort(messageSlice(msgs))
 	for i, m := range msgs {
@@ -491,9 +497,12 @@ func TestLeaderCommitEntry(t *testing.T) {
 // TestLeaderAcknowledgeCommit tests that a log entry is committed once the
 // leader that created the entry has replicated it on a majority of the servers.
 // Reference: section 5.3
+// 验证当leader收到超过半数的节点应答，那么将commit提交的日志条目
 func TestLeaderAcknowledgeCommit(t *testing.T) {
 	tests := []struct {
+		// 集群节点的数量
 		size      int
+		// 每个节点是否接收proposal
 		acceptors map[uint64]bool
 		wack      bool
 	}{
@@ -630,6 +639,7 @@ func TestFollowerCommitEntry(t *testing.T) {
 // append entries.
 // Reference: section 5.3
 func TestFollowerCheckMsgApp(t *testing.T) {
+	// 提前准备好的已持久化的数据
 	ents := []pb.Entry{{Term: 1, Index: 1}, {Term: 2, Index: 2}}
 	tests := []struct {
 		term        uint64
@@ -674,12 +684,14 @@ func TestFollowerCheckMsgApp(t *testing.T) {
 // Also, it writes the new entry into stable storage.
 // Reference: section 5.3
 // 验证当follower收到合法的Append请求时，将删除冲突的日志条目，然后将还没有的日志条目添加进来
-// TODO
 func TestFollowerAppendEntries(t *testing.T) {
 	tests := []struct {
 		index, term uint64
+		// 通过append消息尝试添加进去的日志条目
 		ents        []pb.Entry
+		// 所有的日志数组
 		wents       []pb.Entry
+		// 未持久化的日志数组
 		wunstable   []pb.Entry
 	}{
 		{
@@ -711,10 +723,13 @@ func TestFollowerAppendEntries(t *testing.T) {
 		storage := NewMemoryStorage()
 		storage.Append([]pb.Entry{{Term: 1, Index: 1}, {Term: 2, Index: 2}})
 		r := newTestRaft(1, []uint64{1, 2, 3}, 10, 1, storage)
+		// 角色为follower
 		r.becomeFollower(2, 2)
 
+		// 模拟收到leader的append消息
 		r.Step(pb.Message{From: 2, To: 1, Type: pb.MsgApp, Term: 2, LogTerm: tt.term, Index: tt.index, Entries: tt.ents})
 
+		// 验证在收到消息之后的日志条目
 		if g := r.raftLog.allEntries(); !reflect.DeepEqual(g, tt.wents) {
 			t.Errorf("#%d: ents = %+v, want %+v", i, g, tt.wents)
 		}
@@ -727,6 +742,7 @@ func TestFollowerAppendEntries(t *testing.T) {
 // TestLeaderSyncFollowerLog tests that the leader could bring a follower's log
 // into consistency with its own.
 // Reference: section 5.3, figure 7
+// 验证leader最终会将follower的日志同步成与leader端一致的日志
 func TestLeaderSyncFollowerLog(t *testing.T) {
 	ents := []pb.Entry{
 		{},
@@ -778,10 +794,12 @@ func TestLeaderSyncFollowerLog(t *testing.T) {
 	}
 	for i, tt := range tests {
 		leadStorage := NewMemoryStorage()
+		// leader的存储预先加载测试数据
 		leadStorage.Append(ents)
 		lead := newTestRaft(1, []uint64{1, 2, 3}, 10, 1, leadStorage)
 		lead.loadState(pb.HardState{Commit: lead.raftLog.lastIndex(), Term: term})
 		followerStorage := NewMemoryStorage()
+		// follower的存储加载的是测试用例数据
 		followerStorage.Append(tt)
 		follower := newTestRaft(2, []uint64{1, 2, 3}, 10, 1, followerStorage)
 		follower.loadState(pb.HardState{Term: term - 1})
@@ -789,6 +807,7 @@ func TestLeaderSyncFollowerLog(t *testing.T) {
 		// The second may have more up-to-date log than the first one, so the
 		// first node needs the vote from the third node to become the leader.
 		n := newNetwork(lead, follower, nopStepper)
+		// 选举
 		n.send(pb.Message{From: 1, To: 1, Type: pb.MsgHup})
 		// The election occurs in the term after the one we loaded with
 		// lead.loadState above.
@@ -805,6 +824,7 @@ func TestLeaderSyncFollowerLog(t *testing.T) {
 // TestVoteRequest tests that the vote request includes information about the candidate’s log
 // and are sent to all of the other nodes.
 // Reference: section 5.4.1
+// 模拟candidate的投票请求中，会带上当前该节点日志的term、index、logterm信息
 func TestVoteRequest(t *testing.T) {
 	tests := []struct {
 		ents  []pb.Entry
@@ -815,11 +835,13 @@ func TestVoteRequest(t *testing.T) {
 	}
 	for j, tt := range tests {
 		r := newTestRaft(1, []uint64{1, 2, 3}, 10, 1, NewMemoryStorage())
+		// 先append测试的数据
 		r.Step(pb.Message{
 			From: 2, To: 1, Type: pb.MsgApp, Term: tt.wterm - 1, LogTerm: 0, Index: 0, Entries: tt.ents,
 		})
 		r.readMessages()
 
+		// 模拟超时
 		for i := 1; i < r.electionTimeout*2; i++ {
 			r.tickElection()
 		}
@@ -829,6 +851,7 @@ func TestVoteRequest(t *testing.T) {
 		if len(msgs) != 2 {
 			t.Fatalf("#%d: len(msg) = %d, want %d", j, len(msgs), 2)
 		}
+		// 验证发出去的消息都是投票消息，并且带上了相关的信息
 		for i, m := range msgs {
 			if m.Type != pb.MsgVote {
 				t.Errorf("#%d: msgType = %d, want %d", i, m.Type, pb.MsgVote)
@@ -853,6 +876,7 @@ func TestVoteRequest(t *testing.T) {
 // TestVoter tests the voter denies its vote if its own log is more up-to-date
 // than that of the candidate.
 // Reference: section 5.4.1
+// 验证投票者不会通过比自己当前日志还旧的candidate投票
 func TestVoter(t *testing.T) {
 	tests := []struct {
 		ents    []pb.Entry
@@ -862,8 +886,11 @@ func TestVoter(t *testing.T) {
 		wreject bool
 	}{
 		// same logterm
+		// logterm相同，index相同
 		{[]pb.Entry{{Term: 1, Index: 1}}, 1, 1, false},
+		// logterm相同，index更大
 		{[]pb.Entry{{Term: 1, Index: 1}}, 1, 2, false},
+		// logterm,index都小，拒绝
 		{[]pb.Entry{{Term: 1, Index: 1}, {Term: 1, Index: 2}}, 1, 1, true},
 		// candidate higher logterm
 		{[]pb.Entry{{Term: 1, Index: 1}}, 2, 1, false},
@@ -898,6 +925,7 @@ func TestVoter(t *testing.T) {
 // TestLeaderOnlyCommitsLogFromCurrentTerm tests that only log entries from the leader’s
 // current term are committed by counting replicas.
 // Reference: section 5.4.2
+// 验证leader不会提交使用过期任期term提交的数据
 func TestLeaderOnlyCommitsLogFromCurrentTerm(t *testing.T) {
 	ents := []pb.Entry{{Term: 1, Index: 1}, {Term: 2, Index: 2}}
 	tests := []struct {
@@ -905,6 +933,7 @@ func TestLeaderOnlyCommitsLogFromCurrentTerm(t *testing.T) {
 		wcommit uint64
 	}{
 		// do not commit log entries in previous terms
+		// 索引1和2是以前term提交的数据，所以不会改变当前的commit
 		{1, 0},
 		{2, 0},
 		// commit log in current term
@@ -912,6 +941,7 @@ func TestLeaderOnlyCommitsLogFromCurrentTerm(t *testing.T) {
 	}
 	for i, tt := range tests {
 		storage := NewMemoryStorage()
+		// 存储先append进去数据，模拟这些数据已经在新leader之前提交过了
 		storage.Append(ents)
 		r := newTestRaft(1, []uint64{1, 2}, 10, 1, storage)
 		r.loadState(pb.HardState{Term: 2})
