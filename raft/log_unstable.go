@@ -40,6 +40,7 @@ type unstable struct {
 	// all entries that have not yet been written to storage.
 	// 还未持久化的数据
 	entries []pb.Entry
+	// offset用于保存entries数组中的数据的起始index
 	offset  uint64
 
 	logger Logger

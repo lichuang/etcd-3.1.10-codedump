@@ -83,14 +83,21 @@ func (l *raftLog) String() string {
 // maybeAppend returns (0, false) if the entries cannot be appended. Otherwise,
 // it returns (last index of new entries, true).
 // 尝试添加一组日志，如果不能添加则返回(0,false)，否则返回(新的日志的索引,true)
+// index：从哪里开始的日志条目
+// logTerm：这一组日志对应的term
+// committed：leader上的committed索引
+// ents：需要提交的一组日志，因此这组数据的最大索引为index+len(ents)
 func (l *raftLog) maybeAppend(index, logTerm, committed uint64, ents ...pb.Entry) (lastnewi uint64, ok bool) {
 	if l.matchTerm(index, logTerm) {
 		// 首先需要保证传入的index和logTerm能匹配的上才能走入这里，否则直接返回false
+
+		// 首先得到传入数据的最后一条索引
 		lastnewi = index + uint64(len(ents))
 		// 查找传入的数据从哪里开始找不到对应的Term了
 		ci := l.findConflict(ents)
 		switch {
 		case ci == 0:
+			// 没有冲突，忽略
 		case ci <= l.committed:
 			// 找到的数据索引小于committed，都说明传入的数据是错误的
 			l.logger.Panicf("entry %d conflict with committed entry [committed(%d)]", ci, l.committed)
@@ -100,6 +107,7 @@ func (l *raftLog) maybeAppend(index, logTerm, committed uint64, ents ...pb.Entry
 			// 从查找到的数据索引开始，将这之后的数据放入到unstable存储中
 			l.append(ents[ci-offset:]...)
 		}
+		// 选择committed和lastnewi中的最小者进行commit
 		l.commitTo(min(committed, lastnewi))
 		return lastnewi, true
 	}
