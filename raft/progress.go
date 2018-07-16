@@ -42,9 +42,15 @@ func (st ProgressStateType) String() string { return prstmap[uint64(st)] }
 type Progress struct {
 	// Next保存的是下一次leader发送append消息时传送过来的日志索引
 	// 当选举出新的leader时，首先初始化Next为该leader最后一条日志+1
-	// 然后如果向该节点append日志失败，则递减Next回退日志，一直回退到索引匹配为止
+	// 如果向该节点append日志失败，则递减Next回退日志，一直回退到索引匹配为止
 
 	// Match保存在该节点上保存的日志的最大索引，初始化为0
+	// 正常情况下，Next = Match + 1
+	// 以下情况下不是上面这种情况：
+	// 1. 切换到Probe状态时，如果上一个状态是Snapshot状态，即正在接收快照，那么Next = max(pr.Match+1, pendingSnapshot+1)
+	// 2. 当该follower不在Replicate状态时，说明不是正常的接收副本状态。
+	//    此时当leader与follower同步leader上的日志时，可能出现覆盖的情况，即此时follower上面假设Match为3，但是索引为3的数据会被
+	//    leader覆盖，此时Next指针可能会一直回溯到与leader上日志匹配的位置，再开始正常同步日志，此时也会出现Next != Match + 1的情况出现
 	Match, Next uint64
 	// State defines how the leader should interact with the follower.
 	//
@@ -57,15 +63,25 @@ type Progress struct {
 	//
 	// When in ProgressStateSnapshot, leader should have sent out snapshot
 	// before and stops sending any replication message.
+
+	// ProgressStateProbe：在每次heartbeat消息间隔期最多发一条同步日志消息给该节点
+	// ProgressStateReplicate：正常的接受副本数据状态。当处于该状态时，leader在发送副本消息之后，
+	// 就修改该节点的next索引为发送消息的最大索引+1
+	// ProgressStateSnapshot：接收副本状态
 	State ProgressStateType
 	// Paused is used in ProgressStateProbe.
 	// When Paused is true, raft should pause sending replication message to this peer.
+	// 在状态切换到Probe状态以后，该follower就标记为Paused，此时将暂停同步日志到该节点
 	Paused bool
+
 	// PendingSnapshot is used in ProgressStateSnapshot.
 	// If there is a pending snapshot, the pendingSnapshot will be set to the
 	// index of the snapshot. If pendingSnapshot is set, the replication process of
 	// this Progress will be paused. raft will not resend snapshot until the pending one
 	// is reported to be failed.
+	// 如果向该节点发送快照消息，PendingSnapshot用于保存快照消息的索引
+	// 当PendingSnapshot不为0时，该节点也被标记为暂停状态。
+	// raft只有在这个正在进行中的快照同步失败以后，才会重传快照消息
 	PendingSnapshot uint64
 
 	// RecentActive is true if the progress is recently active. Receiving any messages
@@ -145,13 +161,16 @@ func (pr *Progress) optimisticUpdate(n uint64) { pr.Next = n + 1 }
 
 // maybeDecrTo returns false if the given to index comes from an out of order message.
 // Otherwise it decreases the progress next index to min(rejected, last) and returns true.
+// maybeDecrTo函数在传入的索引不在范围内的情况下返回false
+// 否则将把该节点的index减少到min(rejected,last)然后返回true
 // rejected是拒绝该append消息时的索引，last是拒绝该消息的节点的最后一条日志索引
 func (pr *Progress) maybeDecrTo(rejected, last uint64) bool {
 	if pr.State == ProgressStateReplicate {	// 如果当前在接收副本状态
 		// the rejection must be stale if the progress has matched and "rejected"
 		// is smaller than "match".
 		if rejected <= pr.Match {
-			// 这种情况说明返回的情况已经过期，中间有其他添加成功的情况，导致match索引递增，此时不需要回退索引，返回false
+			// 这种情况说明返回的情况已经过期，中间有其他添加成功的情况，导致match索引递增，
+			// 此时不需要回退索引，返回false
 			return false
 		}
 		// directly decrease next to match + 1
@@ -163,6 +182,9 @@ func (pr *Progress) maybeDecrTo(rejected, last uint64) bool {
 	// 以下都不是接收副本状态的情况
 
 	// the rejection must be stale if "rejected" does not match next - 1
+	// 为什么这里不是对比Match？因为Next涉及到下一次给该Follower发送什么日志，
+	// 所以这里对比和下面修改的是Next索引
+	// Match只表示该节点上存放的最大日志索引，而当leader发生变化时，可能会覆盖一些日志
 	if pr.Next-1 != rejected {
 		// 这种情况说明返回的情况已经过期，不需要回退索引，返回false
 		return false
@@ -183,6 +205,10 @@ func (pr *Progress) resume() { pr.Paused = false }
 // paused. A node may be paused because it has rejected recent
 // MsgApps, is currently waiting for a snapshot, or has reached the
 // MaxInflightMsgs limit.
+// 一个节点当前处于暂停状态原因有几个：
+// 1)拒绝了最近的append消息(ProgressStateProbe状态)
+// 2)接受snapshot状态中(ProgressStateSnapshot状态)
+// 3)已经达到了需要限流的程度(ProgressStateReplicate状态且滑动窗口已满)
 // ispause在以下情况中返回true：
 // 1）等待接收快照
 // 2) inflight数组已满，需要进行限流

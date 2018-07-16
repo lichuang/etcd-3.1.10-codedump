@@ -44,6 +44,7 @@ type EntryType int32
 
 const (
 	EntryNormal     EntryType = 0
+	// 配置变更类的日志
 	EntryConfChange EntryType = 1
 )
 
@@ -77,6 +78,7 @@ func (EntryType) EnumDescriptor() ([]byte, []int) { return fileDescriptorRaft, [
 type MessageType int32
 
 const (
+	// 本节点要进行选举
 	MsgHup            MessageType = 0
 	// MsgBeat不用于节点之间通信，仅用于leader内部HB时间到了让leader发送HB消息
 	MsgBeat           MessageType = 1

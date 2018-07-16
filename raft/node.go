@@ -51,6 +51,8 @@ func (a *SoftState) equal(b *SoftState) bool {
 // Ready encapsulates the entries and messages that are ready to read,
 // be saved to stable storage, committed or sent to other peers.
 // All fields in Ready are read-only.
+// Ready结构体用于保存已经处于ready状态的日志和消息，这些都是准备保存到持久化存储中、提交或者发送给其他节点的
+// Ready结构体的所有数据都是只读状态
 type Ready struct {
 	// The current volatile state of a Node.
 	// SoftState will be nil if there is no update.

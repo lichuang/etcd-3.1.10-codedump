@@ -109,12 +109,14 @@ func (st StateType) String() string {
 // Config contains the parameters to start a raft.
 type Config struct {
 	// ID is the identity of the local raft. ID cannot be 0.
+	// 每个节点的ID
 	ID uint64
 
 	// peers contains the IDs of all nodes (including self) in the raft cluster. It
 	// should only be set when starting a new raft cluster. Restarting raft from
 	// previous configuration will panic if peers is set. peer is private and only
 	// used for testing right now.
+	// 保存集群所有节点ID的数组（包括自身）
 	peers []uint64
 
 	// ElectionTick is the number of Node.Tick invocations that must pass between
@@ -123,10 +125,12 @@ type Config struct {
 	// candidate and start an election. ElectionTick must be greater than
 	// HeartbeatTick. We suggest ElectionTick = 10 * HeartbeatTick to avoid
 	// unnecessary leader switching.
+	// 选举超时tick
 	ElectionTick int
 	// HeartbeatTick is the number of Node.Tick invocations that must pass between
 	// heartbeats. That is, a leader sends heartbeat messages to maintain its
 	// leadership every HeartbeatTick ticks.
+	// 心跳超时tick
 	HeartbeatTick int
 
 	// Storage is the storage for raft. raft generates entries and states to be
@@ -155,6 +159,7 @@ type Config struct {
 
 	// CheckQuorum specifies if the leader should check quorum activity. Leader
 	// steps down when quorum is not active for an electionTimeout.
+	// 标记leader是否需要检查集群中超过半数节点的活跃性，如果在选举超时内没有满足该条件，leader切换到follower状态
 	CheckQuorum bool
 
 	// PreVote enables the Pre-Vote algorithm described in raft thesis section
@@ -210,7 +215,9 @@ func (c *Config) validate() error {
 type raft struct {
 	id uint64
 
+	// 任期号
 	Term uint64
+	// 投票给哪个节点ID
 	Vote uint64
 
 	readStates []ReadState
@@ -688,6 +695,7 @@ func (r *raft) campaign(t CampaignType) {
 	if r.quorum() == r.poll(r.id, voteRespMsgType(voteMsg), true) {
 		// We won the election after voting for ourselves (which must mean that
 		// this is a single-node cluster). Advance to the next state.
+		// 有半数投票，说明通过，切换到下一个状态
 		if t == campaignPreElection {
 			r.campaign(campaignElection)
 		} else {
@@ -738,13 +746,11 @@ func (r *raft) poll(id uint64, t pb.MessageType, v bool) (granted int) {
 func (r *raft) Step(m pb.Message) error {
 	r.logger.Infof("from:%d, to:%d, type:%s, term:%d, state:%v", m.From, m.To, m.Type, r.Term, r.state)
 
-	if (m.From == 1 && m.To == 3 && r.state == StateCandidate && m.Type == pb.MsgHeartbeat) {
-		r.logger.Infof("test:%s", "test")
-	}
 	// Handle the message term, which may result in our stepping down to a follower.
 	switch {
 	case m.Term == 0:
 		// local message
+		// 来自本地的消息
 	case m.Term > r.Term:
 		// 消息的Term大于节点当前的Term
 		lead := m.From
@@ -768,8 +774,10 @@ func (r *raft) Step(m pb.Message) error {
 			lead = None
 		}
 		switch {
+		// 注意Go的switch case不做处理的话是不会默认走到default情况的
 		case m.Type == pb.MsgPreVote:
 			// Never change our term in response to a PreVote
+			// 在应答一个prevote消息时不对任期term做修改
 		case m.Type == pb.MsgPreVoteResp && !m.Reject:
 			// We send pre-vote requests with a term in our future. If the
 			// pre-vote is granted, we will increment our term when we get a
@@ -799,10 +807,14 @@ func (r *raft) Step(m pb.Message) error {
 			// removed node will send MsgVotes (or MsgPreVotes) which will be ignored,
 			// but it will not receive MsgApp or MsgHeartbeat, so it will not create
 			// disruptive term increases
+			// 收到了一个节点发送过来的更小的term消息。这种情况可能是因为消息的网络延时导致，但是也可能因为该节点由于网络分区导致了它递增了term到一个新的任期。
+			// ，这种情况下该节点不能赢得一次选举，也不能使用旧的任期号重新再加入集群中。如果checkQurom为false，这种情况可以使用递增任期号应答来处理。
+			// 但是如果checkQurom为True，
 			// 此时收到了一个更小的term的节点发出的HB或者APP消息，于是应答一个appresp消息，试图纠正它的状态
 			r.send(pb.Message{To: m.From, Type: pb.MsgAppResp})
 		} else {
 			// ignore other cases
+			// 除了上面的情况以外，忽略任何term小于当前节点所在任期号的消息
 			r.logger.Infof("%x [term: %d] ignored a %s message with lower term from %x [term: %d]",
 				r.id, r.Term, m.Type, m.From, m.Term)
 		}
@@ -816,7 +828,7 @@ func (r *raft) Step(m pb.Message) error {
 		if r.state != StateLeader {
 			// 当前不是leader
 
-			// 取出[applied+1,committed+1]之间的消息
+			// 取出[applied+1,committed+1]之间的消息，即得到还未进行applied的日志列表
 			ents, err := r.raftLog.slice(r.raftLog.applied+1, r.raftLog.committed+1, noLimit)
 			if err != nil {
 				r.logger.Panicf("unexpected error getting unapplied entries (%v)", err)
@@ -843,7 +855,7 @@ func (r *raft) Step(m pb.Message) error {
 		// The m.Term > r.Term clause is for MsgPreVote. For MsgVote m.Term should
 		// always equal r.Term.
 		if (r.Vote == None || m.Term > r.Term || r.Vote == m.From) && r.raftLog.isUpToDate(m.Index, m.LogTerm) {
-			// 如果当前没有给任何节点投票（r.Vote == None）或者投票的节点term大于本节点的（m.Term > r.Term，这种情况出现在prevote的状态下）
+			// 如果当前没有给任何节点投票（r.Vote == None）或者投票的节点term大于本节点的（m.Term > r.Term）
 			// 或者是之前已经投票的节点（r.Vote == m.From）
 			// 同时还满足该节点的消息是最新的（r.raftLog.isUpToDate(m.Index, m.LogTerm)），那么就接收这个节点的投票
 			r.logger.Infof("%x [logterm: %d, index: %d, vote: %x] cast %s for %x [logterm: %d, index: %d] at term %d",
@@ -975,7 +987,7 @@ func stepLeader(r *raft, m pb.Message) {
 		if m.Reject {	// 如果拒绝了append消息，说明term、index不匹配
 			r.logger.Debugf("%x received msgApp rejection(lastindex: %d) from %x for index %d",
 				r.id, m.RejectHint, m.From, m.Index)
-			// rejecthist带来的是拒绝该app请求的节点，其最大日志的索引
+			// rejecthint带来的是拒绝该app请求的节点，其最大日志的索引
 			if pr.maybeDecrTo(m.Index, m.RejectHint) {	// 尝试回退关于该节点的Match、Next索引
 				r.logger.Debugf("%x decreased progress of %x to [%s]", r.id, m.From, pr)
 				if pr.State == ProgressStateReplicate {
@@ -1021,6 +1033,7 @@ func stepLeader(r *raft, m pb.Message) {
 	case pb.MsgHeartbeatResp:
 		// 该节点当前处于活跃状态
 		pr.RecentActive = true
+		// 这里调用resume是因为当前可能处于probe状态，而这个状态在两个heartbeat消息的间隔期只能收一条同步日志消息，因此在收到HB消息时就停止pause标记
 		pr.resume()
 
 		// free one slot for the full inflights window to allow progress.
@@ -1209,6 +1222,7 @@ func stepFollower(r *raft, m pb.Message) {
 			r.logger.Infof("%x no leader at term %d; dropping leader transfer msg", r.id, r.Term)
 			return
 		}
+		// 向leader转发leader转让消息
 		m.To = r.lead
 		r.send(m)
 	case pb.MsgTimeoutNow:
@@ -1217,6 +1231,7 @@ func stepFollower(r *raft, m pb.Message) {
 			// Leadership transfers never use pre-vote even if r.preVote is true; we
 			// know we are not recovering from a partition so there is no need for the
 			// extra round trip.
+			// timeout消息用在leader转让中，所以不需要prevote即使开了这个选项
 			r.campaign(campaignTransfer)
 		} else {
 			r.logger.Infof("%x received MsgTimeoutNow from %x but is not promotable", r.id, m.From)
@@ -1356,6 +1371,7 @@ func (r *raft) removeNode(id uint64) {
 
 	// The quorum size is now smaller, so see if any pending entries can
 	// be committed.
+	// 由于删除了节点，所以半数节点的数量变少了，于是去查看是否有可以认为提交成功的数据
 	if r.maybeCommit() {
 		r.bcastAppend()
 	}

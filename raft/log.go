@@ -40,6 +40,7 @@ type raftLog struct {
 	// been instructed to apply to its state machine.
 	// Invariant: applied <= committed
 	// committed保存是写入持久化存储中的最高index，而applied保存的是传入状态机中的最高index
+	// 即一条日志首先要提交成功（即committed），才能被applied到状态机中
 	// 因此以下不等式一直成立：applied <= committed
 	applied uint64
 
@@ -105,7 +106,7 @@ func (l *raftLog) maybeAppend(index, logTerm, committed uint64, ents ...pb.Entry
 	return 0, false
 }
 
-// 添加数据
+// 添加数据，返回最后一条日志的索引
 func (l *raftLog) append(ents ...pb.Entry) uint64 {
 	if len(ents) == 0 {
 		return l.lastIndex()
@@ -131,7 +132,9 @@ func (l *raftLog) append(ents ...pb.Entry) uint64 {
 // The first entry MUST have an index equal to the argument 'from'.
 // The index of the given entries MUST be continuously increasing.
 // 返回第一个在entry数组中，index中的term与当前存储的数据不同的索引
-// 如果找不到这样的数据，则返回0
+// 如果没有冲突数据，而且当前存在的日志条目包含所有传入的日志条目，返回0；
+// 如果没有冲突数据，而且传入的日志条目有新的数据，则返回新日志条目的第一条索引
+// 一个日志条目在其索引值对应的term与当前相同索引的term不相同时认为是有冲突的数据。
 func (l *raftLog) findConflict(ents []pb.Entry) uint64 {
 	for _, ne := range ents {
 		if !l.matchTerm(ne.Index, ne.Term) {
@@ -229,6 +232,7 @@ func (l *raftLog) appliedTo(i uint64) {
 		return
 	}
 	// 判断合法性
+	// 新的applied ID既不能比committed大，也不能比当前的applied索引小
 	if l.committed < i || i < l.applied {
 		l.logger.Panicf("applied(%d) is out of range [prevApplied(%d), committed(%d)]", i, l.applied, l.committed)
 	}
@@ -325,6 +329,7 @@ func (l *raftLog) maybeCommit(maxIndex, term uint64) bool {
 	return false
 }
 
+// 使用快照数据进行恢复
 func (l *raftLog) restore(s pb.Snapshot) {
 	l.logger.Infof("log [%s] starts to restore snapshot [index: %d, term: %d]", l, s.Metadata.Index, s.Metadata.Term)
 	l.committed = s.Metadata.Index
@@ -376,6 +381,7 @@ func (l *raftLog) slice(lo, hi, maxSize uint64) ([]pb.Entry, error) {
 	return limitSize(ents, maxSize), nil
 }
 
+// 判断传入的lo，hi是否超过范围了
 // l.firstIndex <= lo <= hi <= l.firstIndex + len(l.entries)
 func (l *raftLog) mustCheckOutOfBounds(lo, hi uint64) error {
 	if lo > hi {
