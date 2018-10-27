@@ -122,16 +122,26 @@ func (rd Ready) containsUpdates() bool {
 type Node interface {
 	// Tick increments the internal logical clock for the Node by a single tick. Election
 	// timeouts and heartbeat timeouts are in units of ticks.
+	// 应用层每次tick时需要调用该函数，将会由这里驱动raft的一些操作比如选举等。
+	// 至于tick的单位是多少由应用层自己决定，只要保证是恒定时间都会来调用一次就好了
 	Tick()
+
 	// Campaign causes the Node to transition to candidate state and start campaigning to become leader.
+	// 调用该函数将驱动节点进入候选人状态，进而将竞争leader
 	Campaign(ctx context.Context) error
+
 	// Propose proposes that data be appended to the log.
+	// 提议写入数据到日志中，可能会返回错误
 	Propose(ctx context.Context, data []byte) error
+
 	// ProposeConfChange proposes config change.
 	// At most one ConfChange can be in the process of going through consensus.
 	// Application needs to call ApplyConfChange when applying EntryConfChange type entry.
+	// 提交配置变更
 	ProposeConfChange(ctx context.Context, cc pb.ConfChange) error
+
 	// Step advances the state machine using the given message. ctx.Err() will be returned, if any.
+	// 将消息msg灌入状态机
 	Step(ctx context.Context, msg pb.Message) error
 
 	// Ready returns a channel that returns the current point-in-time state.
@@ -139,6 +149,7 @@ type Node interface {
 	//
 	// NOTE: No committed entries from the next Ready may be applied until all committed entries
 	// and snapshots from the previous one have finished.
+	// 这里是核心函数，将返回Ready的channel，应用层需要关注这个channel，当发生变更时将其中的数据进行操作
 	Ready() <-chan Ready
 
 	// Advance notifies the Node that the application has saved progress up to the last Ready.
@@ -150,7 +161,9 @@ type Node interface {
 	// commands. For example. when the last Ready contains a snapshot, the application might take
 	// a long time to apply the snapshot data. To continue receiving Ready without blocking raft
 	// progress, it can call Advance before finishing applying the last ready.
+	// Advance函数是当使用者已经将上一次Ready数据处理之后，调用该函数告诉raft库可以进行下一步的操作
 	Advance()
+
 	// ApplyConfChange applies config change to the local node.
 	// Returns an opaque ConfState protobuf which must be recorded
 	// in snapshots. Will never return nil; it returns a pointer only
@@ -158,12 +171,14 @@ type Node interface {
 	ApplyConfChange(cc pb.ConfChange) *pb.ConfState
 
 	// TransferLeadership attempts to transfer leadership to the given transferee.
+	// leader迁移
 	TransferLeadership(ctx context.Context, lead, transferee uint64)
 
 	// ReadIndex request a read state. The read state will be set in the ready.
 	// Read state has a read index. Once the application advances further than the read
 	// index, any linearizable read requests issued before the read request can be
 	// processed safely. The read state will have the same rctx attached.
+	// 一致性读相关
 	ReadIndex(ctx context.Context, rctx []byte) error
 
 	// Status returns the current status of the raft state machine.

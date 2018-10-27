@@ -33,7 +33,7 @@ type readIndexStatus struct {
 	req   pb.Message
 	// 保存收到该readIndex请求时的leader commit索引
 	index uint64
-	// 保存有什么节点进行了应答
+	// 保存有什么节点进行了应答，从这里可以计算出来是否有超过半数应答了
 	acks  map[uint64]struct{}
 }
 

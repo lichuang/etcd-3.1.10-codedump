@@ -116,6 +116,7 @@ func (l *raftLog) maybeAppend(index, logTerm, committed uint64, ents ...pb.Entry
 
 // 添加数据，返回最后一条日志的索引
 func (l *raftLog) append(ents ...pb.Entry) uint64 {
+	// 没有数据，直接返回最后一条日志索引
 	if len(ents) == 0 {
 		return l.lastIndex()
 	}
@@ -144,12 +145,16 @@ func (l *raftLog) append(ents ...pb.Entry) uint64 {
 // 如果没有冲突数据，而且传入的日志条目有新的数据，则返回新日志条目的第一条索引
 // 一个日志条目在其索引值对应的term与当前相同索引的term不相同时认为是有冲突的数据。
 func (l *raftLog) findConflict(ents []pb.Entry) uint64 {
+	// 遍历传入的ents数组
 	for _, ne := range ents {
+		// 找到第一个任期号不匹配的，即当前在raftLog存储的该索引数据的任期号，不是ent数据的任期号
 		if !l.matchTerm(ne.Index, ne.Term) {
 			if ne.Index <= l.lastIndex() {
+				// 如果不匹配任期号的索引数据，小于当前最后一条日志索引，就打印错误日志
 				l.logger.Infof("found conflict at index %d [existing term: %d, conflicting term: %d]",
 					ne.Index, l.zeroTermOnErrCompacted(l.term(ne.Index)), ne.Term)
 			}
+			// 返回第一条任期号与索引号不匹配的数据索引
 			return ne.Index
 		}
 	}
@@ -169,8 +174,9 @@ func (l *raftLog) unstableEntries() []pb.Entry {
 // entries after the index of snapshot.
 // 返回commit但是还没有apply的所有数据
 func (l *raftLog) nextEnts() (ents []pb.Entry) {
+	// 首先得到applied和firstindex的最大值
 	off := max(l.applied+1, l.firstIndex())
-	if l.committed+1 > off {
+	if l.committed+1 > off {	// 如果commit索引比前面得到的值还大，说明还有没有commit了但是还没apply的数据，将这些数据返回
 		ents, err := l.slice(off, l.committed+1, noLimit)
 		if err != nil {
 			l.logger.Panicf("unexpected error when getting unapplied entries (%v)", err)
@@ -182,11 +188,13 @@ func (l *raftLog) nextEnts() (ents []pb.Entry) {
 
 // hasNextEnts returns if there is any available entries for execution. This
 // is a fast check without heavy raftLog.slice() in raftLog.nextEnts().
+// 这个函数的功能跟前面nextEnts类似，只不过这个函数做判断而不返回实际数据
 func (l *raftLog) hasNextEnts() bool {
 	off := max(l.applied+1, l.firstIndex())
 	return l.committed+1 > off
 }
 
+// 返回快照数据
 func (l *raftLog) snapshot() (pb.Snapshot, error) {
 	if l.unstable.snapshot != nil {
 		// 如果没有保存的数据有快照，就返回
@@ -197,7 +205,7 @@ func (l *raftLog) snapshot() (pb.Snapshot, error) {
 }
 
 func (l *raftLog) firstIndex() uint64 {
-	// 首先尝试在未持久化数据中看有没有快照数据，存在的情况下那个firstIndex更小
+	// 首先尝试在未持久化数据中看有没有快照数据
 	if i, ok := l.unstable.maybeFirstIndex(); ok {
 		return i
 	}
@@ -247,8 +255,10 @@ func (l *raftLog) appliedTo(i uint64) {
 	l.applied = i
 }
 
+// 传入数据索引，该索引表示在这个索引之前的数据应用层都进行了持久化，修改unstable的数据
 func (l *raftLog) stableTo(i, t uint64) { l.unstable.stableTo(i, t) }
 
+// 传入数据索引，该索引表示在这个索引之前的数据应用层都进行了持久化，修改unstable的快照数据
 func (l *raftLog) stableSnapTo(i uint64) { l.unstable.stableSnapTo(i) }
 
 // 返回最后一个索引的term

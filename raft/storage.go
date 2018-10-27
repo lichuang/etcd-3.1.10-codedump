@@ -49,27 +49,35 @@ var ErrSnapshotTemporarilyUnavailable = errors.New("snapshot is temporarily unav
 // application is responsible for cleanup and recovery in this case.
 type Storage interface {
 	// InitialState returns the saved HardState and ConfState information.
+	// 返回保存的初始状态
 	InitialState() (pb.HardState, pb.ConfState, error)
 	// Entries returns a slice of log entries in the range [lo,hi).
 	// MaxSize limits the total size of the log entries returned, but
 	// Entries returns at least one entry if any.
+	// 返回索引范围在[lo,hi)之内并且不大于maxSize的entries数组
 	Entries(lo, hi, maxSize uint64) ([]pb.Entry, error)
 	// Term returns the term of entry i, which must be in the range
 	// [FirstIndex()-1, LastIndex()]. The term of the entry before
 	// FirstIndex is retained for matching purposes even though the
 	// rest of that entry may not be available.
+	// 传入一个索引值，返回这个索引值对应的任期号，如果不存在则error不为空，其中：
+	// ErrCompacted：表示传入的索引数据已经找不到，说明已经被压缩成快照数据了。
+	// ErrUnavailable：表示传入的索引值大于当前的最大索引
 	Term(i uint64) (uint64, error)
 	// LastIndex returns the index of the last entry in the log.
+	// 获得最后一条数据的索引值
 	LastIndex() (uint64, error)
 	// FirstIndex returns the index of the first log entry that is
 	// possibly available via Entries (older entries have been incorporated
 	// into the latest Snapshot; if storage only contains the dummy entry the
 	// first log entry is not available).
+	// 返回第一条数据的索引值
 	FirstIndex() (uint64, error)
 	// Snapshot returns the most recent snapshot.
 	// If snapshot is temporarily unavailable, it should return ErrSnapshotTemporarilyUnavailable,
 	// so raft state machine could know that Storage needs some time to prepare
 	// snapshot and call Snapshot later.
+	// 返回最新的快照数据
 	Snapshot() (pb.Snapshot, error)
 }
 
@@ -192,6 +200,7 @@ func (ms *MemoryStorage) ApplySnapshot(snap pb.Snapshot) error {
 	}
 
 	ms.snapshot = snap
+	// 这里也插入了一条空数据
 	ms.ents = []pb.Entry{{Term: snap.Metadata.Term, Index: snap.Metadata.Index}}
 	return nil
 }
@@ -233,17 +242,21 @@ func (ms *MemoryStorage) Compact(compactIndex uint64) error {
 	ms.Lock()
 	defer ms.Unlock()
 	offset := ms.ents[0].Index
+	// 小于当前索引，说明已经被压缩过了
 	if compactIndex <= offset {
 		return ErrCompacted
 	}
+	// 大于当前最大索引，panic
 	if compactIndex > ms.lastIndex() {
 		raftLogger.Panicf("compact %d is out of bound lastindex(%d)", compactIndex, ms.lastIndex())
 	}
 
 	i := compactIndex - offset
 	ents := make([]pb.Entry, 1, 1+uint64(len(ms.ents))-i)
+	// 这里也是先写一个空数据
 	ents[0].Index = ms.ents[i].Index
 	ents[0].Term = ms.ents[i].Term
+	// 然后再append进来
 	ents = append(ents, ms.ents[i+1:]...)
 	ms.ents = ents
 	return nil

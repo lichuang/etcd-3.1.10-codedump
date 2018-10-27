@@ -243,7 +243,7 @@ type raft struct {
 	// leader转让的目标节点id
 	leadTransferee uint64
 	// New configuration is ignored if there exists unapplied configuration.
-	// 标识当前还有没有applied的配置
+	// 标识当前还有没有applied的配置数据
 	pendingConf bool
 
 	readOnly *readOnly
@@ -595,11 +595,13 @@ func (r *raft) tickHeartbeat() {
 		}
 		// If current leader cannot transfer leadership in electionTimeout, it becomes leader again.
 		if r.state == StateLeader && r.leadTransferee != None {
+			// 当前在迁移leader的流程，但是过了选举超时新的leader还没有产生，那么旧的leader重新成为leader
 			r.abortLeaderTransfer()
 		}
 	}
 
 	if r.state != StateLeader {
+		// 不是leader的就不用往下走了
 		return
 	}
 
@@ -1004,7 +1006,7 @@ func stepLeader(r *raft, m pb.Message) {
 					// 如果当前该节点在探测状态，切换到可以接收副本状态
 					pr.becomeReplicate()
 				case pr.State == ProgressStateSnapshot && pr.needSnapshotAbort():
-					// 如果当前该接在在接受快照状态，而且需要被打断
+					// 如果当前该接在在接受快照状态，而且已经快照数据同步完成了
 					r.logger.Debugf("%x snapshot aborted, resumed sending replication messages to %x [%s]", r.id, m.From, pr)
 					// 切换到探测状态
 					pr.becomeProbe()

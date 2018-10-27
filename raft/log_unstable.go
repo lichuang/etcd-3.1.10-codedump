@@ -32,7 +32,6 @@ import pb "github.com/coreos/etcd/raft/raftpb"
 // 快照数据用于开始启动时需要恢复的数据较多，所以一次性的使用快照数据来恢复
 // entry数组则是用于逐条数据进行接收时使用
 // 其中offset与entry数组配合着使用，可能会出现小于持久化最大索引偏移量的数据，所以需要做截断处理
-// 此时需要
 type unstable struct {
 	// the incoming unstable snapshot, if any.
 	// 保存还没有持久化的快照数据

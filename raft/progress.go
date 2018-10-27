@@ -234,6 +234,8 @@ func (pr *Progress) snapshotFailure() { pr.PendingSnapshot = 0 }
 // is equal or higher than the pendingSnapshot.
 // 可以中断快照的情况：当前为接收快照，同时match已经大于等于快照索引
 // 因为match已经大于快照索引了，所以这部分快照数据可以不接收了，也就是可以被中断的快照操作
+// 因为在节点落后leader数据很多的情况下，可能leader会多次通过snapshot同步数据给节点，
+// 而当 pr.Match >= pr.PendingSnapshot的时候，说明通过快照来同步数据的流程完成了，这时可以进入正常的接收同步数据状态了。
 func (pr *Progress) needSnapshotAbort() bool {
 	return pr.State == ProgressStateSnapshot && pr.Match >= pr.PendingSnapshot
 }

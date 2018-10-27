@@ -82,10 +82,13 @@ const (
 	MsgHup            MessageType = 0
 	// MsgBeat不用于节点之间通信，仅用于leader内部HB时间到了让leader发送HB消息
 	MsgBeat           MessageType = 1
-	// 提交数据
+	// 用户向raft提交数据
 	MsgProp           MessageType = 2
+	// leader向集群中其他节点同步数据
 	MsgApp            MessageType = 3
+	// append消息的应答
 	MsgAppResp        MessageType = 4
+	// 投票消息
 	MsgVote           MessageType = 5
 	MsgVoteResp       MessageType = 6
 	MsgSnap           MessageType = 7
