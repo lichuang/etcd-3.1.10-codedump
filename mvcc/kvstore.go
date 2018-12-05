@@ -28,6 +28,7 @@ import (
 	"github.com/coreos/etcd/pkg/schedule"
 	"github.com/coreos/pkg/capnslog"
 	"golang.org/x/net/context"
+	"runtime/debug"
 )
 
 var (
@@ -65,7 +66,9 @@ type store struct {
 
 	ig ConsistentIndexGetter
 
+	// 保存持久化存储数据
 	b       backend.Backend
+	// 保存key索引
 	kvindex index
 
 	le lease.Lessor
@@ -82,6 +85,7 @@ type store struct {
 	// to avoid a repetitive allocation in saveIndex.
 	bytesBuf8 []byte
 
+	// 保存修改的数据数组，用于在watch事件中通知客户端
 	changes   []mvccpb.KeyValue
 	fifoSched schedule.Scheduler
 
@@ -539,6 +543,7 @@ func (s *store) rangeKeys(key, end []byte, limit, rangeRev int64, countOnly bool
 }
 
 func (s *store) put(key, value []byte, leaseID lease.LeaseID) {
+	plog.Infof("put stack: %s", string(debug.Stack()))
 	s.txnModify = true
 
 	rev := s.currentRev.main + 1
@@ -547,8 +552,10 @@ func (s *store) put(key, value []byte, leaseID lease.LeaseID) {
 
 	// if the key exists before, use its previous created and
 	// get its previous leaseID
+	// 检查key索引中之前是否已经存在该key
 	_, created, ver, err := s.kvindex.Get(key, rev)
 	if err == nil {
+		// 使用之前的main版本号
 		c = created.main
 		oldLease = s.le.GetLease(lease.LeaseItem{Key: string(key)})
 	}
@@ -571,8 +578,11 @@ func (s *store) put(key, value []byte, leaseID lease.LeaseID) {
 		plog.Fatalf("cannot marshal event: %v", err)
 	}
 
+	// 写入持久化存储
 	s.tx.UnsafeSeqPut(keyBucketName, ibytes, d)
+	// 写入key索引
 	s.kvindex.Put(key, revision{main: rev, sub: s.currentRev.sub})
+	// 保存变更到changes数组中用于通知客户端
 	s.changes = append(s.changes, kv)
 	s.currentRev.sub += 1
 

@@ -35,10 +35,16 @@ import (
 )
 
 const (
+	// 以下是WAL存放的数据类型
+	// 元数据
 	metadataType int64 = iota + 1
+	// 日志数据
 	entryType
+	// 状态数据
 	stateType
+	// 校验数据
 	crcType
+	// 快照数据
 	snapshotType
 
 	// warnSyncDuration is the amount of time allotted to an fsync before

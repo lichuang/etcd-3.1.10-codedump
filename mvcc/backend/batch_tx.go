@@ -148,6 +148,7 @@ func (t *batchTx) CommitAndStop() {
 }
 
 func (t *batchTx) Unlock() {
+	// 大于批量提交阈值了，直接commit
 	if t.pending >= t.backend.batchLimit {
 		t.commit(false)
 		t.pending = 0

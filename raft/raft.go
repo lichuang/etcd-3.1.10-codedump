@@ -529,8 +529,10 @@ func (r *raft) maybeCommit() bool {
 	return r.raftLog.maybeCommit(mci, r.Term)
 }
 
+// 重置raft的一些状态
 func (r *raft) reset(term uint64) {
 	if r.Term != term {
+		// 如果是新的任期，那么保存任期号，同时将投票节点置空
 		r.Term = term
 		r.Vote = None
 	}
@@ -538,11 +540,13 @@ func (r *raft) reset(term uint64) {
 
 	r.electionElapsed = 0
 	r.heartbeatElapsed = 0
+	// 重置选举超时
 	r.resetRandomizedElectionTimeout()
 
 	r.abortLeaderTransfer()
 
 	r.votes = make(map[uint64]bool)
+	// 似乎对于非leader节点来说，重置progress数组状态没有太多的意义？
 	for id := range r.prs {
 		r.prs[id] = &Progress{Next: r.raftLog.lastIndex() + 1, ins: newInflights(r.maxInflight)}
 		if id == r.id {
@@ -589,6 +593,7 @@ func (r *raft) tickHeartbeat() {
 	r.electionElapsed++
 
 	if r.electionElapsed >= r.electionTimeout {
+		// 如果超过了选举时间
 		r.electionElapsed = 0
 		if r.checkQuorum {
 			r.Step(pb.Message{From: r.id, Type: pb.MsgCheckQuorum})
@@ -606,6 +611,7 @@ func (r *raft) tickHeartbeat() {
 	}
 
 	if r.heartbeatElapsed >= r.heartbeatTimeout {
+		// 向集群中其他节点发送广播消息
 		r.heartbeatElapsed = 0
 		// 尝试发送MsgBeat消息
 		r.Step(pb.Message{From: r.id, Type: pb.MsgBeat})
@@ -912,6 +918,8 @@ func stepLeader(r *raft, m pb.Message) {
 			// If we are not currently a member of the range (i.e. this node
 			// was removed from the configuration while serving as leader),
 			// drop any new proposals.
+			// 这里检查本节点是否还在集群以内，如果已经不在集群中了，不处理该消息直接返回。
+      // 这种情况出现在本节点已经通过配置变化被移除出了集群的场景。
 			return
 		}
 		// 当前正在转换leader过程中，不能提交
@@ -1267,7 +1275,7 @@ func (r *raft) handleAppendEntries(m pb.Message) {
 	r.logger.Infof("%x -> %x index %d", m.From, r.id, m.Index)
 	// 尝试添加到日志模块中
 	if mlastIndex, ok := r.raftLog.maybeAppend(m.Index, m.LogTerm, m.Commit, m.Entries...); ok {
-		// 添加成功
+		// 添加成功，返回的index是添加成功之后的最大index
 		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: mlastIndex})
 	} else {
 		// 添加失败

@@ -70,6 +70,7 @@ func (s *Snapshotter) SaveSnap(snapshot raftpb.Snapshot) error {
 	return s.save(&snapshot)
 }
 
+// 保存快照数据
 func (s *Snapshotter) save(snapshot *raftpb.Snapshot) error {
 	start := time.Now()
 
@@ -77,6 +78,7 @@ func (s *Snapshotter) save(snapshot *raftpb.Snapshot) error {
 	b := pbutil.MustMarshal(snapshot)
 	crc := crc32.Update(0, crcTable, b)
 	snap := snappb.Snapshot{Crc: crc, Data: b}
+	// 序列化
 	d, err := snap.Marshal()
 	if err != nil {
 		return err
@@ -84,8 +86,10 @@ func (s *Snapshotter) save(snapshot *raftpb.Snapshot) error {
 		marshallingDurations.Observe(float64(time.Since(start)) / float64(time.Second))
 	}
 
+	// 写磁盘
 	err = pioutil.WriteAndSyncFile(filepath.Join(s.dir, fname), d, 0666)
 	if err == nil {
+		// 记录一下花了多少时间
 		saveDurations.Observe(float64(time.Since(start)) / float64(time.Second))
 	} else {
 		err1 := os.Remove(filepath.Join(s.dir, fname))

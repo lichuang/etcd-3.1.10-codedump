@@ -174,6 +174,7 @@ type EtcdServer struct {
 	Cfg          *ServerConfig
 
 	readych chan struct{}
+	// raftNode结构体负责与底层的raft库交互
 	r       raftNode
 
 	snapCount uint64
@@ -257,8 +258,10 @@ func NewServer(cfg *ServerConfig) (srv *EtcdServer, err error) {
 		return nil, fmt.Errorf("cannot access data directory: %v", terr)
 	}
 
+	// 是否存在WAL
 	haveWAL := wal.Exist(cfg.WALDir())
 
+	// 创建快照数据目录
 	if err = fileutil.TouchDirAll(cfg.SnapDir()); err != nil {
 		plog.Fatalf("create snapshot directory error: %v", err)
 	}
@@ -267,6 +270,7 @@ func NewServer(cfg *ServerConfig) (srv *EtcdServer, err error) {
 	bepath := filepath.Join(cfg.SnapDir(), databaseFilename)
 	beExist := fileutil.Exist(bepath)
 
+	// 创建backend
 	var be backend.Backend
 	beOpened := make(chan struct{})
 	go func() {
@@ -274,9 +278,11 @@ func NewServer(cfg *ServerConfig) (srv *EtcdServer, err error) {
 		beOpened <- struct{}{}
 	}()
 
+	// 等待创建成功
 	select {
 	case <-beOpened:
 	case <-time.After(time.Second):
+		// 超时了
 		plog.Warningf("another etcd process is running with the same data dir and holding the file lock.")
 		plog.Warningf("waiting for it to exit before starting...")
 		<-beOpened
@@ -297,6 +303,7 @@ func NewServer(cfg *ServerConfig) (srv *EtcdServer, err error) {
 		snapshot *raftpb.Snapshot
 	)
 
+	// 以下进行2种情况的共四种组合进行不同的初始化操作：是否已经存在WAL数据、是否是新的cluster
 	switch {
 	case !haveWAL && !cfg.NewCluster:
 		if err = cfg.VerifyJoinExisting(); err != nil {
@@ -357,7 +364,7 @@ func NewServer(cfg *ServerConfig) (srv *EtcdServer, err error) {
 		cl.SetBackend(be)
 		cfg.PrintWithInitial()
 		id, n, s, w = startNode(cfg, cl, cl.MemberIDs())
-	case haveWAL:
+	case haveWAL:	// 存在WAL数据的情况
 		if err = fileutil.IsDirWriteable(cfg.MemberDir()); err != nil {
 			return nil, fmt.Errorf("cannot write to member directory: %v", err)
 		}
@@ -369,6 +376,7 @@ func NewServer(cfg *ServerConfig) (srv *EtcdServer, err error) {
 		if cfg.ShouldDiscover() {
 			plog.Warningf("discovery token ignored since a cluster has already been initialized. Valid log found at %q", cfg.WALDir())
 		}
+		// 拿到快照数据
 		snapshot, err = ss.Load()
 		if err != nil && err != snap.ErrNoSnapshot {
 			return nil, err
@@ -380,6 +388,7 @@ func NewServer(cfg *ServerConfig) (srv *EtcdServer, err error) {
 			plog.Infof("recovered store from snapshot at index %d", snapshot.Metadata.Index)
 		}
 		cfg.Print()
+		// 传入快照数据进行重启
 		if !cfg.ForceNewCluster {
 			id, cl, n, s, w = restartNode(cfg, snapshot)
 		} else {
@@ -572,6 +581,7 @@ func (s *EtcdServer) Lessor() lease.Lessor { return s.lessor }
 func (s *EtcdServer) ApplyWait() <-chan struct{} { return s.applyWait.Wait(s.getCommittedIndex()) }
 
 func (s *EtcdServer) Process(ctx context.Context, m raftpb.Message) error {
+	// 收到的是来自已经被删除节点的消息，忽略
 	if s.cluster.IsIDRemoved(types.ID(m.From)) {
 		plog.Warningf("reject message from removed member %s", types.ID(m.From).String())
 		return httptypes.NewHTTPError(http.StatusForbidden, "cannot process message from removed member")
@@ -593,9 +603,13 @@ func (s *EtcdServer) ReportSnapshot(id uint64, status raft.SnapshotStatus) {
 }
 
 type etcdProgress struct {
+	// 当前配置
 	confState raftpb.ConfState
+	// 快照索引
 	snapi     uint64
+	// applied数据term
 	appliedt  uint64
+	// applied数据索引
 	appliedi  uint64
 }
 
@@ -603,11 +617,15 @@ type etcdProgress struct {
 // and helps decouple state machine logic from Raft algorithms.
 // TODO: add a state machine interface to apply the commit entries and do snapshot/recover
 type raftReadyHandler struct {
+	// 更新leader的回调函数
 	updateLeadership     func()
+	// 更新commit索引的回调函数
 	updateCommittedIndex func(uint64)
 }
 
+// etcdserver的主循环
 func (s *EtcdServer) run() {
+	// 拿到启动时的快照数据
 	snap, err := s.r.raftStorage.Snapshot()
 	if err != nil {
 		plog.Panicf("get snapshot from raft storage error: %v", err)
@@ -628,9 +646,11 @@ func (s *EtcdServer) run() {
 		smu.RUnlock()
 		return
 	}
+	// Ready结构体数据回调函数
 	rh := &raftReadyHandler{
 		updateLeadership: func() {
 			if !s.isLeader() {
+				// 不是leader了
 				if s.lessor != nil {
 					s.lessor.Demote()
 				}
@@ -639,6 +659,7 @@ func (s *EtcdServer) run() {
 				}
 				setSyncC(nil)
 			} else {
+				// 变成leader了
 				setSyncC(s.SyncTicker)
 				if s.compactor != nil {
 					s.compactor.Resume()
@@ -661,9 +682,11 @@ func (s *EtcdServer) run() {
 			}
 		},
 	}
+	// 启动与raft库交互
 	s.r.start(rh)
 
 	// asynchronously accept apply packets, dispatch progress in-order
+	// 启动调度器
 	sched := schedule.NewFIFOScheduler()
 	ep := etcdProgress{
 		confState: snap.Metadata.ConfState,
@@ -711,10 +734,12 @@ func (s *EtcdServer) run() {
 		expiredLeaseC = s.lessor.ExpiredLeasesC()
 	}
 
+	// 下面就是主循环了
 	for {
 		select {
-		case ap := <-s.r.apply():
+		case ap := <-s.r.apply():	// 接收raft apply的数据
 			f := func(context.Context) { s.applyAll(&ep, &ap) }
+			// 调度器来调度函数的执行
 			sched.Schedule(f)
 		case leases := <-expiredLeaseC:
 			s.goAttach(func() {
@@ -747,12 +772,16 @@ func (s *EtcdServer) run() {
 	}
 }
 
+// 应用数据
 func (s *EtcdServer) applyAll(ep *etcdProgress, apply *apply) {
+	// 快照数据
 	s.applySnapshot(ep, apply)
 	st := time.Now()
+	// 日志数据
 	s.applyEntries(ep, apply)
 	d := time.Since(st)
 	entriesNum := len(apply.entries)
+	// 时间过长写告警日志
 	if entriesNum != 0 && d > time.Duration(entriesNum)*warnApplyDuration {
 		plog.Warningf("apply entries took too long [%v for %d entries]", d, len(apply.entries))
 		plog.Warningf("avoid queries with large range/delete range!")
@@ -762,9 +791,12 @@ func (s *EtcdServer) applyAll(ep *etcdProgress, apply *apply) {
 	// wait for the raft routine to finish the disk writes before triggering a
 	// snapshot. or applied index might be greater than the last index in raft
 	// storage, since the raft routine might be slower than apply routine.
+	// 等待写入磁盘完毕
 	<-apply.raftDone
 
+	// 尝试写快照
 	s.triggerSnapshot(ep)
+	// 发送快照数据
 	select {
 	// snapshot requested via send()
 	case m := <-s.r.msgSnapC:
@@ -774,6 +806,7 @@ func (s *EtcdServer) applyAll(ep *etcdProgress, apply *apply) {
 	}
 }
 
+// 应用快照数据
 func (s *EtcdServer) applySnapshot(ep *etcdProgress, apply *apply) {
 	if raft.IsEmptySnap(apply.snapshot) {
 		return
@@ -876,33 +909,42 @@ func (s *EtcdServer) applySnapshot(ep *etcdProgress, apply *apply) {
 	ep.confState = apply.snapshot.Metadata.ConfState
 }
 
+// 应用日志数据
 func (s *EtcdServer) applyEntries(ep *etcdProgress, apply *apply) {
 	if len(apply.entries) == 0 {
 		return
 	}
 	firsti := apply.entries[0].Index
+	// 校验数据
 	if firsti > ep.appliedi+1 {
 		plog.Panicf("first index of committed entry[%d] should <= appliedi[%d] + 1", firsti, ep.appliedi)
 	}
 	var ents []raftpb.Entry
+	// 可能部分数据已经存在，需要截断
 	if ep.appliedi+1-firsti < uint64(len(apply.entries)) {
 		ents = apply.entries[ep.appliedi+1-firsti:]
 	}
+	// 截断之后没有数据了就直接返回
 	if len(ents) == 0 {
 		return
 	}
 	var shouldstop bool
+	// 应用数据
 	if ep.appliedt, ep.appliedi, shouldstop = s.apply(ents, &ep.confState); shouldstop {
+		// 可能应用完毕时修改了配置将节点删除，这时需要退出集群了
 		go s.stopWithDelay(10*100*time.Millisecond, fmt.Errorf("the member has been permanently removed from the cluster"))
 	}
 }
 
+// 触发快照操作
 func (s *EtcdServer) triggerSnapshot(ep *etcdProgress) {
+	// 还没有到配置设置的快照数据量，返回
 	if ep.appliedi-ep.snapi <= s.snapCount {
 		return
 	}
 
 	plog.Infof("start to snapshot (applied: %d, lastsnap: %d)", ep.appliedi, ep.snapi)
+	// 进行快照操作
 	s.snapshot(ep.appliedi, ep.confState)
 	ep.snapi = ep.appliedi
 }
@@ -917,12 +959,15 @@ func (s *EtcdServer) isLeader() bool {
 
 // transferLeadership transfers the leader to the given transferee.
 // TODO: maybe expose to client?
+// 转移leader
 func (s *EtcdServer) transferLeadership(ctx context.Context, lead, transferee uint64) error {
 	now := time.Now()
 	interval := time.Duration(s.Cfg.TickMs) * time.Millisecond
 
 	plog.Infof("%s starts leadership transfer from %s to %s", s.ID(), types.ID(lead), types.ID(transferee))
+	// 调用raft库进行转移
 	s.r.TransferLeadership(ctx, lead, transferee)
+	// 一直等待leader转移成功或者超时
 	for s.Lead() != transferee {
 		select {
 		case <-ctx.Done(): // time out
@@ -949,11 +994,13 @@ func (s *EtcdServer) TransferLeadership() error {
 		return nil
 	}
 
+	// 选择最长active时间的节点做为新的leader
 	transferee, ok := longestConnected(s.r.transport, s.cluster.MemberIDs())
 	if !ok {
 		return ErrUnhealthy
 	}
 
+	// 转移leader的超时时间
 	tm := s.Cfg.ReqTimeout()
 	ctx, cancel := context.WithTimeout(context.TODO(), tm)
 	err := s.transferLeadership(ctx, s.Lead(), uint64(transferee))
@@ -976,6 +1023,7 @@ func (s *EtcdServer) HardStop() {
 // When stopping leader, Stop transfers its leadership to one of its peers
 // before stopping the server.
 func (s *EtcdServer) Stop() {
+	// 节点停止的时候需要转移leader
 	if err := s.TransferLeadership(); err != nil {
 		plog.Warningf("%s failed to transfer leadership (%v)", s.ID(), err)
 	}
@@ -1251,14 +1299,17 @@ func (s *EtcdServer) apply(es []raftpb.Entry, confState *raftpb.ConfState) (appl
 		e := es[i]
 		switch e.Type {
 		case raftpb.EntryNormal:
+			// apply一般的数据
 			s.applyEntryNormal(&e)
 		case raftpb.EntryConfChange:
+			// apply配置变化
 			// set the consistent index of current executing entry
 			if e.Index > s.consistIndex.ConsistentIndex() {
 				s.consistIndex.setConsistentIndex(e.Index)
 			}
 			var cc raftpb.ConfChange
 			pbutil.MustUnmarshal(&cc, e.Data)
+			// 返回的参数里面包括了是否把本节点下线
 			removedSelf, err := s.applyConfChange(cc, confState)
 			s.setAppliedIndex(e.Index)
 			shouldStop = shouldStop || removedSelf
@@ -1275,6 +1326,7 @@ func (s *EtcdServer) apply(es []raftpb.Entry, confState *raftpb.ConfState) (appl
 }
 
 // applyEntryNormal apples an EntryNormal type raftpb request to the EtcdServer
+// 应用已经提交的日志数据
 func (s *EtcdServer) applyEntryNormal(e *raftpb.Entry) {
 	shouldApplyV3 := false
 	if e.Index > s.consistIndex.ConsistentIndex() {
@@ -1299,6 +1351,7 @@ func (s *EtcdServer) applyEntryNormal(e *raftpb.Entry) {
 		return
 	}
 
+	// 将数据反序列化成InternalRaftRequest消息
 	var raftReq pb.InternalRaftRequest
 	if !pbutil.MaybeUnmarshal(&raftReq, e.Data) { // backward compatible
 		var r pb.Request
@@ -1307,10 +1360,13 @@ func (s *EtcdServer) applyEntryNormal(e *raftpb.Entry) {
 		return
 	}
 	if raftReq.V2 != nil {
+		// V2版本的数据？
 		req := raftReq.V2
 		s.w.Trigger(req.ID, s.applyV2Request(req))
 		return
 	}
+
+	// 以下是处理V3版本数据的流程
 
 	// do not re-apply applied entries.
 	if !shouldApplyV3 {
@@ -1323,11 +1379,13 @@ func (s *EtcdServer) applyEntryNormal(e *raftpb.Entry) {
 	}
 
 	var ar *applyResult
+	// 是否需要一个结果，依赖于前面请求是否注册了
 	needResult := s.w.IsRegistered(id)
 	if needResult || !noSideEffect(&raftReq) {
 		if !needResult && raftReq.Txn != nil {
 			removeNeedlessRangeReqs(raftReq.Txn)
 		}
+		// 写入V3版本的存储
 		ar = s.applyV3.Apply(&raftReq)
 	}
 
@@ -1355,12 +1413,14 @@ func (s *EtcdServer) applyEntryNormal(e *raftpb.Entry) {
 
 // applyConfChange applies a ConfChange to the server. It is only
 // invoked with a ConfChange that has already passed through Raft
+// apply配置变化
 func (s *EtcdServer) applyConfChange(cc raftpb.ConfChange, confState *raftpb.ConfState) (bool, error) {
 	if err := s.cluster.ValidateConfigurationChange(cc); err != nil {
 		cc.NodeID = raft.None
 		s.r.ApplyConfChange(cc)
 		return false, err
 	}
+	// 调用raft库修改集群配置
 	*confState = *s.r.ApplyConfChange(cc)
 	switch cc.Type {
 	case raftpb.ConfChangeAddNode:
@@ -1399,6 +1459,7 @@ func (s *EtcdServer) applyConfChange(cc raftpb.ConfChange, confState *raftpb.Con
 }
 
 // TODO: non-blocking snapshot
+// 进行快照
 func (s *EtcdServer) snapshot(snapi uint64, confState raftpb.ConfState) {
 	clone := s.store.Clone()
 	// commit kv to write metadata (for example: consistent index) to disk.
@@ -1416,6 +1477,7 @@ func (s *EtcdServer) snapshot(snapi uint64, confState raftpb.ConfState) {
 		if err != nil {
 			plog.Panicf("store save should never fail: %v", err)
 		}
+		// 从raft的存储中生成快照数据
 		snap, err := s.r.raftStorage.CreateSnapshot(snapi, &confState, d)
 		if err != nil {
 			// the snapshot was done asynchronously with the progress of raft.
@@ -1427,6 +1489,7 @@ func (s *EtcdServer) snapshot(snapi uint64, confState raftpb.ConfState) {
 		}
 		// SaveSnap saves the snapshot and releases the locked wal files
 		// to the snapshot index.
+		// 保存快照数据，同时释放对应的WAL数据
 		if err = s.r.storage.SaveSnap(snap); err != nil {
 			plog.Fatalf("save snapshot error: %v", err)
 		}

@@ -32,8 +32,12 @@ type index interface {
 	Insert(ki *keyIndex)
 }
 
+// 其实明白了keyIndex的设计，这部分就很简单了，这部分代码不加注释了
+// btree里面的每个item都是keyIndex类型的数据
 type treeIndex struct {
+	// 继承自RWMutex，因此自然就有lock、unlock方法了
 	sync.RWMutex
+	// btree索引
 	tree *btree.BTree
 }
 

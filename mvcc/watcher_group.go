@@ -25,6 +25,7 @@ var (
 	// watchBatchMaxRevs is the maximum distinct revisions that
 	// may be sent to an unsynced watcher at a time. Declared as
 	// var instead of const for testing purposes.
+	// 最多一次batch放入多少revision
 	watchBatchMaxRevs = 1000
 )
 

@@ -676,19 +676,24 @@ func (s *EtcdServer) processInternalRaftRequestOnce(ctx context.Context, r pb.In
 	}
 	ch := s.w.Register(id)
 
+	// 设置请求超时
 	cctx, cancel := context.WithTimeout(ctx, s.Cfg.ReqTimeout())
 	defer cancel()
 
 	start := time.Now()
+	// 向raft库提交请求数据
 	s.r.Propose(cctx, data)
+	// 增加pending的提交计数
 	proposalsPending.Inc()
+	// 返回时记得递减计数
 	defer proposalsPending.Dec()
 
 	select {
-	case x := <-ch:
+	case x := <-ch:	// 提交结束，返回结果
 		return x.(*applyResult), nil
-	case <-cctx.Done():
+	case <-cctx.Done():	// 提交超时，返回失败
 		proposalsFailed.Inc()
+		// 别忘了把前面注册的id唤醒
 		s.w.Trigger(id, nil) // GC wait
 		return nil, s.parseProposeCtxErr(cctx.Err(), start)
 	case <-s.done:

@@ -86,6 +86,7 @@ type apply struct {
 	raftDone <-chan struct{} // rx {} after raft has persisted messages
 }
 
+// 这个类内部负责与raft库交互
 type raftNode struct {
 	// Cache of the latest raft index and raft term the server has seen.
 	// These three unit64 fields must be the first elements to keep 64-bit
@@ -96,17 +97,20 @@ type raftNode struct {
 
 	mu sync.Mutex
 	// last lead elected time
+	// 上一次leader变化的时间
 	lt time.Time
 
 	// to check if msg receiver is removed from cluster
 	isIDRemoved func(id uint64) bool
 
+	// 继承自raft.Node实现
 	raft.Node
 
 	// a chan to send/receive snapshot
 	msgSnapC chan raftpb.Message
 
 	// a chan to send out apply
+	// 通过这个channel来向上层的server（这里是EtcdServer）发送apply数据
 	applyc chan apply
 
 	// a chan to send out readState
@@ -146,7 +150,8 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 			case <-r.ticker:
 				r.Tick()
 			case rd := <-r.Ready():
-				if rd.SoftState != nil {
+				if rd.SoftState != nil {	// 软状态发生变化
+					// 新旧leader不一样
 					if lead := atomic.LoadUint64(&r.lead); rd.SoftState.Lead != raft.None && lead != rd.SoftState.Lead {
 						r.mu.Lock()
 						r.lt = time.Now()
@@ -154,14 +159,18 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 						leaderChanges.Inc()
 					}
 
+					// 是否有leader
 					if rd.SoftState.Lead == raft.None {
 						hasLeader.Set(0)
 					} else {
 						hasLeader.Set(1)
 					}
 
+					// 保存leader
 					atomic.StoreUint64(&r.lead, rd.SoftState.Lead)
+					// 是否是leader
 					islead = rd.RaftState == raft.StateLeader
+					// 更新leader
 					rh.updateLeadership()
 				}
 
@@ -182,9 +191,11 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 					raftDone: raftDone,
 				}
 
+				// 更新commit index
 				updateCommittedIndex(&ap, rh)
 
 				select {
+				// etcdserver主循环在监听这个applyc管道的数据
 				case r.applyc <- ap:
 				case <-r.stopped:
 					return
@@ -199,6 +210,7 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 				}
 
 				// gofail: var raftBeforeSave struct{}
+				// 将ready的HS和日志条目写入持久化存储，在这里是写入WAL中。
 				if err := r.storage.Save(rd.HardState, rd.Entries); err != nil {
 					plog.Fatalf("raft save state and entries error: %v", err)
 				}
@@ -209,21 +221,25 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 
 				if !raft.IsEmptySnap(rd.Snapshot) {
 					// gofail: var raftBeforeSaveSnap struct{}
+					// 保存快照数据
 					if err := r.storage.SaveSnap(rd.Snapshot); err != nil {
 						plog.Fatalf("raft save snapshot error: %v", err)
 					}
 					// gofail: var raftAfterSaveSnap struct{}
+					// 更新raft存储中的快照数据
 					r.raftStorage.ApplySnapshot(rd.Snapshot)
 					plog.Infof("raft applied incoming snapshot at index %d", rd.Snapshot.Metadata.Index)
 					// gofail: var raftAfterApplySnap struct{}
 				}
 
+				// 向raft存储添加ready的日志数据
 				r.raftStorage.Append(rd.Entries)
 
 				if !islead {
 					// gofail: var raftBeforeFollowerSend struct{}
 					r.sendMessages(rd.Messages)
 				}
+				// 写入磁盘完毕，向channel写入数据通知上层
 				raftDone <- struct{}{}
 				r.Advance()
 			case <-r.stopped:
@@ -233,14 +249,18 @@ func (r *raftNode) start(rh *raftReadyHandler) {
 	}()
 }
 
+// 更新commit index索引值
 func updateCommittedIndex(ap *apply, rh *raftReadyHandler) {
 	var ci uint64
+	// 如果日志条目不为空，取最后一条日志索引
 	if len(ap.entries) != 0 {
 		ci = ap.entries[len(ap.entries)-1].Index
 	}
+	// 如果快照数据索引大于上面的值，取快照索引值
 	if ap.snapshot.Metadata.Index > ci {
 		ci = ap.snapshot.Metadata.Index
 	}
+	// 更新索引值
 	if ci != 0 {
 		rh.updateCommittedIndex(ci)
 	}
@@ -331,6 +351,7 @@ func advanceTicksForElection(n raft.Node, electionTicks int) {
 	}
 }
 
+// 新启动server，没有WAL数据的情况
 func startNode(cfg *ServerConfig, cl *membership.RaftCluster, ids []types.ID) (id types.ID, n raft.Node, s *raft.MemoryStorage, w *wal.WAL) {
 	var err error
 	member := cl.MemberByName(cfg.Name)
@@ -372,22 +393,29 @@ func startNode(cfg *ServerConfig, cl *membership.RaftCluster, ids []types.ID) (i
 	return
 }
 
+// 重启server，根据WAL数据恢复
 func restartNode(cfg *ServerConfig, snapshot *raftpb.Snapshot) (types.ID, *membership.RaftCluster, raft.Node, *raft.MemoryStorage, *wal.WAL) {
 	var walsnap walpb.Snapshot
 	if snapshot != nil {
 		walsnap.Index, walsnap.Term = snapshot.Metadata.Index, snapshot.Metadata.Term
 	}
+	// 根据WAL读取先有的数据，得到WAL结构体、hardstate、日志数据
 	w, id, cid, st, ents := readWAL(cfg.WALDir(), walsnap)
 
 	plog.Infof("restarting member %s in cluster %s at commit index %d", id, cid, st.Commit)
 	cl := membership.NewCluster("")
 	cl.SetID(cid)
+	// 创建raft存储结构
 	s := raft.NewMemoryStorage()
 	if snapshot != nil {
+		// 写入快照数据
 		s.ApplySnapshot(*snapshot)
 	}
+	// 写入hardstate
 	s.SetHardState(st)
+	// 写入日志数据
 	s.Append(ents)
+	// 启动raft节点
 	c := &raft.Config{
 		ID:              uint64(id),
 		ElectionTick:    cfg.ElectionTicks,

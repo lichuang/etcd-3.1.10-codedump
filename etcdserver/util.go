@@ -55,6 +55,7 @@ func numConnectedSince(transport rafthttp.Transporter, since time.Time, self typ
 
 // longestConnected chooses the member with longest active-since-time.
 // It returns false, if nothing is active.
+// 选择由最长actice时间的节点返回
 func longestConnected(tp rafthttp.Transporter, membs []types.ID) (types.ID, bool) {
 	var longest types.ID
 	var oldest time.Time

@@ -79,12 +79,15 @@ type backend struct {
 	// size is the number of bytes in the backend
 	size int64
 	// commits counts number of commits since start
+	// commit数量
 	commits int64
 
 	mu sync.RWMutex
 	db *bolt.DB
 
+	// 批量提交的时间间隔
 	batchInterval time.Duration
+	// 批量提交的阈值
 	batchLimit    int
 	batchTx       *batchTx
 
@@ -187,6 +190,7 @@ func (b *backend) Size() int64 {
 
 func (b *backend) run() {
 	defer close(b.donec)
+	// 定时提交数据落盘
 	t := time.NewTimer(b.batchInterval)
 	defer t.Stop()
 	for {
@@ -346,6 +350,7 @@ func NewDefaultTmpBackend() (*backend, string) {
 }
 
 type snapshot struct {
+	// 继承自bolt.Tx Size和WriteTo使用它的实现
 	*bolt.Tx
 }
 
