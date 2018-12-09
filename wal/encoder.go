@@ -63,6 +63,7 @@ func (e *encoder) encode(rec *walpb.Record) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	// 首先计算出crc
 	e.crc.Write(rec.Data)
 	rec.Crc = e.crc.Sum32()
 	var (
@@ -71,6 +72,7 @@ func (e *encoder) encode(rec *walpb.Record) error {
 		n    int
 	)
 
+	// 得到反序列化之后的data
 	if rec.Size() > len(e.buf) {
 		data, err = rec.Marshal()
 		if err != nil {
@@ -84,18 +86,23 @@ func (e *encoder) encode(rec *walpb.Record) error {
 		data = e.buf[:n]
 	}
 
+	// 根据数据长度计算记录长度和填充长度
 	lenField, padBytes := encodeFrameSize(len(data))
+	// 写入数据长度
 	if err = writeUint64(e.bw, lenField, e.uint64buf); err != nil {
 		return err
 	}
 
+	// 如果有填充长度则填充0
 	if padBytes != 0 {
 		data = append(data, make([]byte, padBytes)...)
 	}
+	// 写入page
 	_, err = e.bw.Write(data)
 	return err
 }
 
+// 传入数据长度，返回记录长度，然后进行8字节对齐返回填充数据的长度
 func encodeFrameSize(dataBytes int) (lenField uint64, padBytes int) {
 	lenField = uint64(dataBytes)
 	// force 8 byte alignment so length never gets a torn write

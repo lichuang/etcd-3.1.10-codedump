@@ -22,6 +22,7 @@ import (
 	"github.com/coreos/etcd/pkg/fileutil"
 )
 
+// 将tmpdirpath这个临时目录重命名为正式目录名称，然后创建FilePipeline实例
 func (w *WAL) renameWal(tmpdirpath string) (*WAL, error) {
 	// On non-Windows platforms, hold the lock while renaming. Releasing
 	// the lock and trying to reacquire it quickly can be flaky because
@@ -29,16 +30,19 @@ func (w *WAL) renameWal(tmpdirpath string) (*WAL, error) {
 	// happening. The fds are set up as close-on-exec by the Go runtime,
 	// but there is a window between the fork and the exec where another
 	// process holds the lock.
-
+	// 清空WAL文件夹
 	if err := os.RemoveAll(w.dir); err != nil {
 		return nil, err
 	}
+	// 将tmp目录重命名为WAL文件夹
 	if err := os.Rename(tmpdirpath, w.dir); err != nil {
 		return nil, err
 	}
-
+	// 创建FilePipeline实例
 	w.fp = newFilePipeline(w.dir, SegmentSizeBytes)
+	// 打开WAL目录
 	df, err := fileutil.OpenDir(w.dir)
+	// 保存目录File实例
 	w.dirFile = df
 	return w, err
 }

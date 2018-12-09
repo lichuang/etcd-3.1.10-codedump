@@ -31,9 +31,11 @@ const minSectorSize = 512
 
 type decoder struct {
 	mu  sync.Mutex
+	// 在WAL.openAtIndex方法中打开的日志文件
 	brs []*bufio.Reader
 
 	// lastValidOff file offset following the last valid decoded record
+	// 紧跟着最后一条合法记录的文件偏移量
 	lastValidOff int64
 	crc          hash.Hash32
 }
@@ -57,35 +59,46 @@ func (d *decoder) decode(rec *walpb.Record) error {
 }
 
 func (d *decoder) decodeRecord(rec *walpb.Record) error {
+	// 没有日志文件可以读取了，返回EOF
 	if len(d.brs) == 0 {
 		return io.EOF
 	}
 
+	// 尝试读一个Int64的值
 	l, err := readInt64(d.brs[0])
-	if err == io.EOF || (err == nil && l == 0) {
+	if err == io.EOF || (err == nil && l == 0) {	// 如果EOF（读到了文件尾）或者读不到数据
 		// hit end of file or preallocated space
+		// 这时可能读到了这个文件的最后
+		// 尝试读下一个wal文件
 		d.brs = d.brs[1:]
 		if len(d.brs) == 0 {
+			// 但是已经没有wal文件了，也是返回EOF
 			return io.EOF
 		}
+		// 既然换了一个新文件，就重置lastValidOff
 		d.lastValidOff = 0
+		// 调用decodeRecord重新开始读取
 		return d.decodeRecord(rec)
 	}
 	if err != nil {
 		return err
 	}
 
+	// 返回记录长度和填充长度
 	recBytes, padBytes := decodeFrameSize(l)
 
+	// 分配足够大小的buffer
 	data := make([]byte, recBytes+padBytes)
+	// 从文件中读取数据到buffer
 	if _, err = io.ReadFull(d.brs[0], data); err != nil {
 		// ReadFull returns io.EOF only if no bytes were read
 		// the decoder should treat this as an ErrUnexpectedEOF instead.
-		if err == io.EOF {
+		if err == io.EOF {	// 读不到数据
 			err = io.ErrUnexpectedEOF
 		}
 		return err
 	}
+	// 反序列化，注意只用了buffer中记录长度的数据
 	if err := rec.Unmarshal(data[:recBytes]); err != nil {
 		if d.isTornEntry(data) {
 			return io.ErrUnexpectedEOF
@@ -94,6 +107,7 @@ func (d *decoder) decodeRecord(rec *walpb.Record) error {
 	}
 
 	// skip crc checking if the record type is crcType
+	// 校验记录的crc值
 	if rec.Type != crcType {
 		d.crc.Write(rec.Data)
 		if err := rec.Validate(d.crc.Sum32()); err != nil {
@@ -103,15 +117,19 @@ func (d *decoder) decodeRecord(rec *walpb.Record) error {
 			return err
 		}
 	}
+	// 移动lastValidOff跳过这条记录
 	// record decoded as valid; point last valid offset to end of record
 	d.lastValidOff += recBytes + padBytes + 8
 	return nil
 }
 
+// 返回记录长度和填充数据长度
 func decodeFrameSize(lenField int64) (recBytes int64, padBytes int64) {
 	// the record size is stored in the lower 56 bits of the 64-bit length
+	// 记录长度存放在低56位
 	recBytes = int64(uint64(lenField) & ^(uint64(0xff) << 56))
 	// non-zero padding is indicated by set MSb / a negative length
+	// 填充长度在高7位，只有在lenField<0的情况下才存在
 	if lenField < 0 {
 		// padding is stored in lower 3 bits of length MSB
 		padBytes = int64((uint64(lenField) >> 56) & 0x7)

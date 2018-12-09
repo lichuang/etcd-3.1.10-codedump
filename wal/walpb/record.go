@@ -20,6 +20,7 @@ var (
 	ErrCRCMismatch = errors.New("walpb: crc mismatch")
 )
 
+// 比较crc是否相同
 func (rec *Record) Validate(crc uint32) error {
 	if rec.Crc == crc {
 		return nil

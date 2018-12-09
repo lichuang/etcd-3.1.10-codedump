@@ -22,19 +22,25 @@ var defaultBufferBytes = 128 * 1024
 
 // PageWriter implements the io.Writer interface so that writes will
 // either be in page chunks or from flushing.
+// 带缓冲区的writer，每次写满一个page的情况下才进行Flush，page的大小可以指定
 type PageWriter struct {
 	w io.Writer
 	// pageOffset tracks the page offset of the base of the buffer
+	// 记录缓冲页数据偏移量
 	pageOffset int
 	// pageBytes is the number of bytes per page
+	// 每一页都有多少byte数据
 	pageBytes int
 	// bufferedBytes counts the number of bytes pending for write in the buffer
+	// 当前buf共有多少数据，因为buf空间是预分配好的
 	bufferedBytes int
 	// buf holds the write buffer
+	// 存储buffer数据
 	buf []byte
 	// bufWatermarkBytes is the number of bytes the buffer can hold before it needs
 	// to be flushed. It is less than len(buf) so there is space for slack writes
 	// to bring the writer to page alignment.
+	// buffer水位，超过这个水位的数据写入磁盘
 	bufWatermarkBytes int
 }
 
@@ -45,6 +51,7 @@ func NewPageWriter(w io.Writer, pageBytes, pageOffset int) *PageWriter {
 		w:                 w,
 		pageOffset:        pageOffset,
 		pageBytes:         pageBytes,
+		// 预分配buffer，为什么是defaultBufferBytes+pageBytes？
 		buf:               make([]byte, defaultBufferBytes+pageBytes),
 		bufWatermarkBytes: defaultBufferBytes,
 	}
@@ -52,17 +59,21 @@ func NewPageWriter(w io.Writer, pageBytes, pageOffset int) *PageWriter {
 
 func (pw *PageWriter) Write(p []byte) (n int, err error) {
 	if len(p)+pw.bufferedBytes <= pw.bufWatermarkBytes {
+		// 还没有到写入磁盘的水位，拷贝到buf中，增加bufferedBytes然后返回
 		// no overflow
 		copy(pw.buf[pw.bufferedBytes:], p)
 		pw.bufferedBytes += len(p)
 		return len(p), nil
 	}
+	// 因为缓冲区会回绕，所以下面的计算要用 %
 	// complete the slack page in the buffer if unaligned
+	// slack存储的是页剩余空间
 	slack := pw.pageBytes - ((pw.pageOffset + pw.bufferedBytes) % pw.pageBytes)
-	if slack != pw.pageBytes {
+	if slack != pw.pageBytes {	// 不足一页
 		partial := slack > len(p)
 		if partial {
 			// not enough data to complete the slack page
+			// 数据不足以填充该页剩余空间
 			slack = len(p)
 		}
 		// special case: writing to slack page in buffer
@@ -99,7 +110,9 @@ func (pw *PageWriter) Flush() error {
 	if pw.bufferedBytes == 0 {
 		return nil
 	}
+	// 写入磁盘
 	_, err := pw.w.Write(pw.buf[:pw.bufferedBytes])
+	// 更新页偏移量
 	pw.pageOffset = (pw.pageOffset + pw.bufferedBytes) % pw.pageBytes
 	pw.bufferedBytes = 0
 	return err
