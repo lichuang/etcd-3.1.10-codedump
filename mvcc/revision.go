@@ -47,6 +47,7 @@ func newRevBytes() []byte {
 	return make([]byte, revBytesLen, markedRevBytesLen)
 }
 
+// 返回main_sub组成的字符串
 func revToBytes(rev revision, bytes []byte) {
 	binary.BigEndian.PutUint64(bytes, uint64(rev.main))
 	bytes[8] = '_'

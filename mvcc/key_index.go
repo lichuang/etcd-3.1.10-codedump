@@ -341,7 +341,7 @@ func (ki *keyIndex) String() string {
 
 // generation contains multiple revisions of a key.
 type generation struct {
-	// 版本号，其实就是revs数组长达
+	// 这个generation存放的修改数量，其实就是revs数组长度
 	ver     int64
 	// 创建这个generation时的revision
 	created revision // when the generation is created (put in first revision).

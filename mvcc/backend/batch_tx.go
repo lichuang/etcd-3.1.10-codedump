@@ -26,13 +26,18 @@ import (
 type BatchTx interface {
 	Lock()
 	Unlock()
+	// 创建bucket
 	UnsafeCreateBucket(name []byte)
+	// 向指定bucket中添加键值对数据
 	UnsafePut(bucketName []byte, key []byte, value []byte)
+	//
 	UnsafeSeqPut(bucketName []byte, key []byte, value []byte)
 	UnsafeRange(bucketName []byte, key, endKey []byte, limit int64) (keys [][]byte, vals [][]byte)
 	UnsafeDelete(bucketName []byte, key []byte)
 	UnsafeForEach(bucketName []byte, visitor func(k, v []byte) error) error
+	// 提交事务，然后打开一个新的读写事务
 	Commit()
+	// 提交但是不打开新的读写事务
 	CommitAndStop()
 }
 
@@ -73,6 +78,7 @@ func (t *batchTx) unsafePut(bucketName []byte, key []byte, value []byte, seq boo
 		plog.Fatalf("bucket %s does not exist", bucketName)
 	}
 	if seq {
+		// 顺序写入，则将填充率设置成0.9
 		// it is useful to increase fill percent when the workloads are mostly append-only.
 		// this can delay the page split and reduce space usage.
 		bucket.FillPercent = 0.9

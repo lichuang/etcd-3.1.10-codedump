@@ -34,6 +34,7 @@ const (
 )
 
 var (
+	// 存储lease的bucket名称
 	leaseBucketName = []byte("lease")
 
 	forever = monotime.Time(math.MaxInt64)
@@ -195,6 +196,7 @@ func (le *lessor) SetRangeDeleter(rd RangeDeleter) {
 	le.rd = rd
 }
 
+// 根据lease ID和过期时间创建lease实例，并且持久化存储
 func (le *lessor) Grant(id LeaseID, ttl int64) (*Lease, error) {
 	if id == NoLease {
 		return nil, ErrLeaseNotFound
@@ -212,46 +214,60 @@ func (le *lessor) Grant(id LeaseID, ttl int64) (*Lease, error) {
 	le.mu.Lock()
 	defer le.mu.Unlock()
 
+	// 如果已经存在就返回
 	if _, ok := le.leaseMap[id]; ok {
 		return nil, ErrLeaseExists
 	}
 
+	// 不能小于最小的TTL
 	if l.ttl < le.minLeaseTTL {
 		l.ttl = le.minLeaseTTL
 	}
 
 	if le.isPrimary() {
+		// 如果是主lessor，那么更新lease的过期时间
 		l.refresh(0)
 	} else {
+		// 否则记录为永不过期
 		l.forever()
 	}
 
+	// 保存实例到leaseMap中
 	le.leaseMap[id] = l
+	// 持久化到存储中
 	l.persistTo(le.b)
 
 	return l, nil
 }
 
+// 撤销ID对应的lease实例
 func (le *lessor) Revoke(id LeaseID) error {
 	le.mu.Lock()
 
 	l := le.leaseMap[id]
 	if l == nil {
+		// 在leaseMap中查询不到就返回
 		le.mu.Unlock()
 		return ErrLeaseNotFound
 	}
+	// 函数退出时关闭revokec
 	defer close(l.revokec)
 	// unlock before doing external work
 	le.mu.Unlock()
 
+	// rd为空也返回，但不是错误
 	if le.rd == nil {
 		return nil
 	}
 
+	// 下面都是使用RangeDelete删除lease实例
+
+	// 事务开始
 	tid := le.rd.TxnBegin()
 
 	// sort keys so deletes are in same order among all members,
 	// otherwise the backened hashes will be different
+	// 删除与这个实例相关的所有key
 	keys := l.Keys()
 	sort.StringSlice(keys).Sort()
 	for _, key := range keys {
@@ -263,12 +279,15 @@ func (le *lessor) Revoke(id LeaseID) error {
 
 	le.mu.Lock()
 	defer le.mu.Unlock()
+	// 从leaseMap中删除这个lease ID
 	delete(le.leaseMap, l.ID)
 	// lease deletion needs to be in the same backend transaction with the
 	// kv deletion. Or we might end up with not executing the revoke or not
 	// deleting the keys if etcdserver fails in between.
+	// 从持久化存储中删除lease ID
 	le.b.BatchTx().UnsafeDelete(leaseBucketName, int64ToBytes(int64(l.ID)))
 
+	// 事务结束
 	err := le.rd.TxnEnd(tid)
 	if err != nil {
 		panic(err)
@@ -279,12 +298,14 @@ func (le *lessor) Revoke(id LeaseID) error {
 
 // Renew renews an existing lease. If the given lease does not exist or
 // has expired, an error will be returned.
+// 续租一个lease实例
 func (le *lessor) Renew(id LeaseID) (int64, error) {
 	le.mu.Lock()
 
 	unlock := func() { le.mu.Unlock() }
 	defer func() { unlock() }()
 
+	// 如果不是主lessor直接返回
 	if !le.isPrimary() {
 		// forward renew request to primary instead of returning error.
 		return -1, ErrNotPrimary
@@ -292,12 +313,14 @@ func (le *lessor) Renew(id LeaseID) (int64, error) {
 
 	demotec := le.demotec
 
+	// 如果从leaseMap中查询失败也返回
 	l := le.leaseMap[id]
 	if l == nil {
 		return -1, ErrLeaseNotFound
 	}
 
 	if l.expired() {
+		// 如果该lease过期了
 		le.mu.Unlock()
 		unlock = func() {}
 		select {
@@ -315,16 +338,19 @@ func (le *lessor) Renew(id LeaseID) (int64, error) {
 		}
 	}
 
+	// 更新过期时间
 	l.refresh(0)
 	return l.ttl, nil
 }
 
+// 根据ID查询lease实例
 func (le *lessor) Lookup(id LeaseID) *Lease {
 	le.mu.Lock()
 	defer le.mu.Unlock()
 	return le.leaseMap[id]
 }
 
+// 将本lessor提升为主lessor，同时设置这里的lease实例过期时间为extent
 func (le *lessor) Promote(extend time.Duration) {
 	le.mu.Lock()
 	defer le.mu.Unlock()
@@ -337,15 +363,18 @@ func (le *lessor) Promote(extend time.Duration) {
 	}
 }
 
+// 降级为非主lessor
 func (le *lessor) Demote() {
 	le.mu.Lock()
 	defer le.mu.Unlock()
 
 	// set the expiries of all leases to forever
+	// 不是主lessor的情况下，所有这里存储的lease实例都永不过期
 	for _, l := range le.leaseMap {
 		l.forever()
 	}
 
+	// 关闭channel
 	if le.demotec != nil {
 		close(le.demotec)
 		le.demotec = nil
@@ -355,16 +384,19 @@ func (le *lessor) Demote() {
 // Attach attaches items to the lease with given ID. When the lease
 // expires, the attached items will be automatically removed.
 // If the given lease does not exist, an error will be returned.
+// 将lease item与lease ID绑定
 func (le *lessor) Attach(id LeaseID, items []LeaseItem) error {
 	le.mu.Lock()
 	defer le.mu.Unlock()
 
+	// 找不到就返回
 	l := le.leaseMap[id]
 	if l == nil {
 		return ErrLeaseNotFound
 	}
 
 	l.mu.Lock()
+	// 遍历item实现绑定
 	for _, it := range items {
 		l.itemSet[it] = struct{}{}
 		le.itemMap[it] = id
@@ -373,6 +405,7 @@ func (le *lessor) Attach(id LeaseID, items []LeaseItem) error {
 	return nil
 }
 
+// 查询item对应的lease ID
 func (le *lessor) GetLease(item LeaseItem) LeaseID {
 	le.mu.Lock()
 	id := le.itemMap[item]
@@ -382,6 +415,7 @@ func (le *lessor) GetLease(item LeaseItem) LeaseID {
 
 // Detach detaches items from the lease with given ID.
 // If the given lease does not exist, an error will be returned.
+// 将item集合与lease ID解绑
 func (le *lessor) Detach(id LeaseID, items []LeaseItem) error {
 	le.mu.Lock()
 	defer le.mu.Unlock()
@@ -411,6 +445,7 @@ func (le *lessor) Recover(b backend.Backend, rd RangeDeleter) {
 	le.initAndRecover()
 }
 
+// 返回监听过期lease实例的channel
 func (le *lessor) ExpiredLeasesC() <-chan []*Lease {
 	return le.expiredC
 }
@@ -420,6 +455,7 @@ func (le *lessor) Stop() {
 	<-le.doneC
 }
 
+// 主循环：在为主lessor的情况下查询过期lease
 func (le *lessor) runLoop() {
 	defer close(le.doneC)
 
@@ -427,7 +463,8 @@ func (le *lessor) runLoop() {
 		var ls []*Lease
 
 		le.mu.Lock()
-		if le.isPrimary() {
+		if le.isPrimary() {	// 如果是主lessor
+			// 查询所有过期的lease返回
 			ls = le.findExpiredLeases()
 		}
 		le.mu.Unlock()
@@ -436,6 +473,7 @@ func (le *lessor) runLoop() {
 			select {
 			case <-le.stopC:
 				return
+				// 通过expiredC写入过去lease集合
 			case le.expiredC <- ls:
 			default:
 				// the receiver of expiredC is probably busy handling
@@ -445,6 +483,7 @@ func (le *lessor) runLoop() {
 		}
 
 		select {
+		// 等待500毫秒进行下一次查询操作
 		case <-time.After(500 * time.Millisecond):
 		case <-le.stopC:
 			return
@@ -454,6 +493,7 @@ func (le *lessor) runLoop() {
 
 // findExpiredLeases loops all the leases in the leaseMap and returns the expired
 // leases that needed to be revoked.
+// 返回所有已经过去的lease返回
 func (le *lessor) findExpiredLeases() []*Lease {
 	leases := make([]*Lease, 0, 16)
 
@@ -509,7 +549,9 @@ type Lease struct {
 
 	// mu protects concurrent accesses to itemSet
 	mu      sync.RWMutex
+	// 该lease实例绑定的lease Item map
 	itemSet map[LeaseItem]struct{}
+	// 该lease实例被撤销时会关闭这个channel，这样监听这个channel的goroutine就会得到通知
 	revokec chan struct{}
 }
 
@@ -517,6 +559,7 @@ func (l *Lease) expired() bool {
 	return l.Remaining() <= 0
 }
 
+// 持久化
 func (l *Lease) persistTo(b backend.Backend) {
 	key := int64ToBytes(int64(l.ID))
 
@@ -543,9 +586,11 @@ func (l *Lease) refresh(extend time.Duration) {
 }
 
 // forever sets the expiry of lease to be forever.
+// 修改过期时间为无穷大，即永不过期
 func (l *Lease) forever() { atomic.StoreUint64((*uint64)(&l.expiry), uint64(forever)) }
 
 // Keys returns all the keys attached to the lease.
+// 返回与这个lease实例绑定的key数组
 func (l *Lease) Keys() []string {
 	l.mu.RLock()
 	keys := make([]string, 0, len(l.itemSet))
@@ -557,6 +602,7 @@ func (l *Lease) Keys() []string {
 }
 
 // Remaining returns the remaining time of the lease.
+// 返回剩余的过期时间
 func (l *Lease) Remaining() time.Duration {
 	t := monotime.Time(atomic.LoadUint64((*uint64)(&l.expiry)))
 	return time.Duration(t - monotime.Now())

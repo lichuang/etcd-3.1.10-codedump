@@ -77,12 +77,14 @@ type backend struct {
 	// 64-bit aligned, otherwise 32-bit tests will crash
 
 	// size is the number of bytes in the backend
+	// 存储数据的字节数
 	size int64
 	// commits counts number of commits since start
 	// commit数量
 	commits int64
 
 	mu sync.RWMutex
+	// 实际存储数据的boltdb实例
 	db *bolt.DB
 
 	// 批量提交的时间间隔
@@ -212,17 +214,24 @@ func (b *backend) Close() error {
 }
 
 // Commits returns total number of commits since start
+// 返回当前提交事务数量
 func (b *backend) Commits() int64 {
 	return atomic.LoadInt64(&b.commits)
 }
 
+// 进行碎片整理，提高其中bucket的填充率。
+// 整理碎片操作通过创建新的blotdb数据库文件并将旧数据库文件的数据写入新数据库文件中。
+// 因为新文件是顺序写入的，所以会提高填充率（FillPercent）
+// 整理过程中，需要加锁
 func (b *backend) Defrag() error {
+	// 碎片整理
 	err := b.defrag()
 	if err != nil {
 		return err
 	}
 
 	// commit to update metadata like db.size
+	// 整理碎片完成后马上进行一次事务提交操作
 	b.batchTx.Commit()
 
 	return nil
@@ -239,14 +248,17 @@ func (b *backend) defrag() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	// 提交当前的事务，由于传入了true参数，所以提交后不会立即打开新的读写事务
 	b.batchTx.commit(true)
 	b.batchTx.tx = nil
 
+	// 创建一个boltdb临时文件
 	tmpdb, err := bolt.Open(b.db.Path()+".tmp", 0600, boltOpenOptions)
 	if err != nil {
 		return err
 	}
 
+	// 进行碎片整理操作
 	err = defragdb(b.db, tmpdb, defragLimit)
 
 	if err != nil {
@@ -255,7 +267,9 @@ func (b *backend) defrag() error {
 		return err
 	}
 
+	// 旧文件的文件路径
 	dbp := b.db.Path()
+	// 新文件的文件路径
 	tdbp := tmpdb.Path()
 
 	err = b.db.Close()
@@ -266,15 +280,18 @@ func (b *backend) defrag() error {
 	if err != nil {
 		plog.Fatalf("cannot close database (%s)", err)
 	}
+	// 重命名数据库文件，用新的覆盖旧的文件
 	err = os.Rename(tdbp, dbp)
 	if err != nil {
 		plog.Fatalf("cannot rename database (%s)", err)
 	}
 
+	// 重新创建bolt.db实例，此时使用的数据库文件就是整理过后的文件
 	b.db, err = bolt.Open(dbp, 0600, boltOpenOptions)
 	if err != nil {
 		plog.Panicf("cannot open database at %s (%v)", dbp, err)
 	}
+	// 开启新的读写事务以及只读事务
 	b.batchTx.tx, err = b.db.Begin(true)
 	if err != nil {
 		plog.Fatalf("cannot begin tx (%s)", err)
@@ -285,12 +302,14 @@ func (b *backend) defrag() error {
 
 func defragdb(odb, tmpdb *bolt.DB, limit int) error {
 	// open a tx on tmpdb for writes
+	// 在新数据库上开启一个读写事务
 	tmptx, err := tmpdb.Begin(true)
 	if err != nil {
 		return err
 	}
 
 	// open a tx on old db for read
+	// 旧数据上开启一个只读事务
 	tx, err := odb.Begin(false)
 	if err != nil {
 		return err
@@ -300,12 +319,15 @@ func defragdb(odb, tmpdb *bolt.DB, limit int) error {
 	c := tx.Cursor()
 
 	count := 0
+	// 遍历旧数据库实例
 	for next, _ := c.First(); next != nil; next, _ = c.Next() {
+		// 获取bucket
 		b := tx.Bucket(next)
 		if b == nil {
 			return fmt.Errorf("backend: cannot defrag bucket %s", string(next))
 		}
 
+		// 在新数据库上创建
 		tmpb, berr := tmptx.CreateBucketIfNotExists(next)
 		tmpb.FillPercent = 0.9 // for seq write in for each
 		if berr != nil {
@@ -324,6 +346,8 @@ func defragdb(odb, tmpdb *bolt.DB, limit int) error {
 					return err
 				}
 				tmpb = tmptx.Bucket(next)
+				// 把填充比例设置成0.9，提高填充比例
+				// 因为是顺序写入新数据库的
 				tmpb.FillPercent = 0.9 // for seq write in for each
 
 				count = 0

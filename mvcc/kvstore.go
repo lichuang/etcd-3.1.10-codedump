@@ -117,9 +117,11 @@ func NewStore(b backend.Backend, le lease.Lessor, ig ConsistentIndexGetter) *sto
 
 	tx := s.b.BatchTx()
 	tx.Lock()
+	// 创建key和meta两个bucket
 	tx.UnsafeCreateBucket(keyBucketName)
 	tx.UnsafeCreateBucket(metaBucketName)
 	tx.Unlock()
+	// 强制提交事务
 	s.b.ForceCommit()
 
 	if err := s.restore(); err != nil {
@@ -130,6 +132,7 @@ func NewStore(b backend.Backend, le lease.Lessor, ig ConsistentIndexGetter) *sto
 	return s
 }
 
+// 返回当前的main revision
 func (s *store) Rev() int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -180,16 +183,22 @@ func (s *store) DeleteRange(key, end []byte) (n, rev int64) {
 	return n, int64(s.currentRev.main)
 }
 
+// 一次事务开始
 func (s *store) TxnBegin() int64 {
+	// mu加锁是保护store本身的数据
 	s.mu.Lock()
+	// 一次事务开始时，将本次事务的sub revision置零
 	s.currentRev.sub = 0
 	s.tx = s.b.BatchTx()
+	// batchtx加锁是为了保护boltdb内部的数据
 	s.tx.Lock()
 
+	// 随机分配一个事务ID
 	s.txnID = rand.Int63()
 	return s.txnID
 }
 
+// 一次事务结束
 func (s *store) TxnEnd(txnID int64) error {
 	err := s.txnEnd(txnID)
 	if err != nil {
@@ -203,6 +212,7 @@ func (s *store) TxnEnd(txnID int64) error {
 // txnEnd is used for unlocking an internal txn. It does
 // not increase the txnCounter.
 func (s *store) txnEnd(txnID int64) error {
+	// 事务ID对不上
 	if txnID != s.txnID {
 		return ErrTxnIDMismatch
 	}
@@ -210,15 +220,19 @@ func (s *store) txnEnd(txnID int64) error {
 	// only update index if the txn modifies the mvcc state.
 	// read only txn might execute with one write txn concurrently,
 	// it should not write its index to mvcc.
+	// 有数据变化，保存索引
 	if s.txnModify {
 		s.saveIndex()
 	}
 	s.txnModify = false
 
+	// 存储可以解锁了
 	s.tx.Unlock()
+	// 如果本次事务进行了修改，那么就将main revision + 1，表示到下一个事务
 	if s.currentRev.sub != 0 {
 		s.currentRev.main += 1
 	}
+	// sub revision置零
 	s.currentRev.sub = 0
 
 	dbTotalSize.Set(float64(s.b.Size()))
@@ -226,7 +240,9 @@ func (s *store) txnEnd(txnID int64) error {
 	return nil
 }
 
+// 事务range操作，，适用于txnID不是noTxn的情况
 func (s *store) TxnRange(txnID int64, key, end []byte, ro RangeOptions) (r *RangeResult, err error) {
+	// 事务ID对不上
 	if txnID != s.txnID {
 		return nil, ErrTxnIDMismatch
 	}
@@ -241,15 +257,18 @@ func (s *store) TxnRange(txnID int64, key, end []byte, ro RangeOptions) (r *Rang
 	return r, err
 }
 
+// 事务put操作，适用于txnID不是noTxn的情况
 func (s *store) TxnPut(txnID int64, key, value []byte, lease lease.LeaseID) (rev int64, err error) {
 	if txnID != s.txnID {
 		return 0, ErrTxnIDMismatch
 	}
 
 	s.put(key, value, lease)
+	// 返回下一次事务的main revision
 	return int64(s.currentRev.main + 1), nil
 }
 
+// 事务delete，适用于txnID不是noTxn的情况
 func (s *store) TxnDeleteRange(txnID int64, key, end []byte) (n, rev int64, err error) {
 	if txnID != s.txnID {
 		return 0, 0, ErrTxnIDMismatch
@@ -257,6 +276,7 @@ func (s *store) TxnDeleteRange(txnID int64, key, end []byte) (n, rev int64, err 
 
 	n = s.deleteRange(key, end)
 	if n != 0 || s.currentRev.sub != 0 {
+		// 有修改操作，返回下一个事务main revision
 		rev = int64(s.currentRev.main + 1)
 	} else {
 		rev = int64(s.currentRev.main)
@@ -279,21 +299,27 @@ func (s *store) compactBarrier(ctx context.Context, ch chan struct{}) {
 	close(ch)
 }
 
+// 压缩操作，将rev这个main revision之前的数据进行压缩
 func (s *store) Compact(rev int64) (<-chan struct{}, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// 如果小于等于compactMainRev，说明rev之前的数据已经被压缩了
 	if rev <= s.compactMainRev {
 		ch := make(chan struct{})
 		f := func(ctx context.Context) { s.compactBarrier(ctx, ch) }
 		s.fifoSched.Schedule(f)
+		// 返回已经压缩的错误
 		return ch, ErrCompacted
 	}
+	// 如果rev大于当前main revision，也是不合法的
 	if rev > s.currentRev.main {
 		return nil, ErrFutureRev
 	}
 
+	// 记录开始的时间
 	start := time.Now()
 
+	// 修改compactMainRev
 	s.compactMainRev = rev
 
 	rbytes := newRevBytes()
@@ -301,11 +327,14 @@ func (s *store) Compact(rev int64) (<-chan struct{}, error) {
 
 	tx := s.b.BatchTx()
 	tx.Lock()
+	// 向meta数据中记录下compact revision
 	tx.UnsafePut(metaBucketName, scheduledCompactKeyName, rbytes)
 	tx.Unlock()
 	// ensure that desired compaction is persisted
+	// 强制提交之前的数据
 	s.b.ForceCommit()
 
+	// 索引进行compact操作
 	keep := s.kvindex.Compact(rev)
 	ch := make(chan struct{})
 	var j = func(ctx context.Context) {
@@ -322,6 +351,7 @@ func (s *store) Compact(rev int64) (<-chan struct{}, error) {
 
 	s.fifoSched.Schedule(j)
 
+	// 记录compact操作的耗时
 	indexCompactionPauseDurations.Observe(float64(time.Since(start) / time.Millisecond))
 	return ch, nil
 }
@@ -347,14 +377,17 @@ func (s *store) Hash() (uint32, int64, error) {
 	return h, rev, err
 }
 
+// 提交事务
 func (s *store) Commit() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.tx = s.b.BatchTx()
 	s.tx.Lock()
+	// 保存索引
 	s.saveIndex()
 	s.tx.Unlock()
+	// 强制提交
 	s.b.ForceCommit()
 }
 
@@ -484,6 +517,7 @@ func (s *store) Close() error {
 	return nil
 }
 
+// 判断两个store是否相等，对比当前revision、compact main revision、kvIndex
 func (a *store) Equal(b *store) bool {
 	if a.currentRev != b.currentRev {
 		return false
@@ -496,32 +530,41 @@ func (a *store) Equal(b *store) bool {
 
 // range is a keyword in Go, add Keys suffix.
 func (s *store) rangeKeys(key, end []byte, limit, rangeRev int64, countOnly bool) (kvs []mvccpb.KeyValue, count int, curRev int64, err error) {
+	// 当前main revision
 	curRev = int64(s.currentRev.main)
+	// sub revision大于0说明当前事务有修改操作
 	if s.currentRev.sub > 0 {
+		// 这种情况下将main revision + 1，到下一次事务ID
 		curRev += 1
 	}
 
+	// 传入的revision不能大于当前的revision
 	if rangeRev > curRev {
 		return nil, -1, s.currentRev.main, ErrFutureRev
 	}
 	var rev int64
+	// rev: 如果rangeRev<=0，那么取curRev；否则取rangeRev
 	if rangeRev <= 0 {
 		rev = curRev
 	} else {
 		rev = rangeRev
 	}
+	// 小于compactMainRev也是不合法的
 	if rev < s.compactMainRev {
 		return nil, -1, 0, ErrCompacted
 	}
 
+	// 从索引中根据revision和key范围取出数据范围
 	_, revpairs := s.kvindex.Range(key, end, int64(rev))
 	if len(revpairs) == 0 {
 		return nil, 0, curRev, nil
 	}
+	// 如果只是想简单计数就直接返回计数就好了
 	if countOnly {
 		return nil, len(revpairs), curRev, nil
 	}
 
+	// 遍历前面的数据反序列化之后返回
 	for _, revpair := range revpairs {
 		start, end := revBytesRange(revpair)
 
@@ -557,6 +600,7 @@ func (s *store) put(key, value []byte, leaseID lease.LeaseID) {
 	if err == nil {
 		// 使用之前的main版本号
 		c = created.main
+		// 拿到旧的lease实例
 		oldLease = s.le.GetLease(lease.LeaseItem{Key: string(key)})
 	}
 
@@ -587,10 +631,12 @@ func (s *store) put(key, value []byte, leaseID lease.LeaseID) {
 	s.currentRev.sub += 1
 
 	if oldLease != lease.NoLease {
+		// 如果旧的lease实例存在
 		if s.le == nil {
 			panic("no lessor to detach lease")
 		}
 
+		// 将key从实例中解绑
 		err = s.le.Detach(oldLease, []lease.LeaseItem{{Key: string(key)}})
 		if err != nil {
 			plog.Errorf("unexpected error from lease detach: %v", err)
@@ -602,6 +648,7 @@ func (s *store) put(key, value []byte, leaseID lease.LeaseID) {
 			panic("no lessor to attach lease")
 		}
 
+		// 然后绑定到新的lease中
 		err = s.le.Attach(leaseID, []lease.LeaseItem{{Key: string(key)}})
 		if err != nil {
 			panic("unexpected error from lease Attach")
@@ -613,15 +660,18 @@ func (s *store) deleteRange(key, end []byte) int64 {
 	s.txnModify = true
 
 	rrev := s.currentRev.main
+	// 如果sub>0，说明当前已经有事务操作，将main revision指向下一个事务
 	if s.currentRev.sub > 0 {
 		rrev += 1
 	}
+	// 从内存中查询待删除的key
 	keys, revs := s.kvindex.Range(key, end, rrev)
 
 	if len(keys) == 0 {
 		return 0
 	}
 
+	// 遍历进行删除
 	for i, key := range keys {
 		s.delete(key, revs[i])
 	}
@@ -631,8 +681,10 @@ func (s *store) deleteRange(key, end []byte) int64 {
 func (s *store) delete(key []byte, rev revision) {
 	mainrev := s.currentRev.main + 1
 
+	// 对持久化存储的删除操作是往里面添加一段tombstone数据
 	ibytes := newRevBytes()
 	revToBytes(revision{main: mainrev, sub: s.currentRev.sub}, ibytes)
+	// 追加t标识
 	ibytes = appendMarkTombstone(ibytes)
 
 	kv := mvccpb.KeyValue{
@@ -644,7 +696,9 @@ func (s *store) delete(key []byte, rev revision) {
 		plog.Fatalf("cannot marshal event: %v", err)
 	}
 
+	// 将序列化之后的数据写入持久化存储
 	s.tx.UnsafeSeqPut(keyBucketName, ibytes, d)
+	// kvIndex进行tombstone操作
 	err = s.kvindex.Tombstone(key, revision{main: mainrev, sub: s.currentRev.sub})
 	if err != nil {
 		plog.Fatalf("cannot tombstone an existing key (%s): %v", string(key), err)
@@ -656,6 +710,7 @@ func (s *store) delete(key []byte, rev revision) {
 	leaseID := s.le.GetLease(item)
 
 	if leaseID != lease.NoLease {
+		// 如果这个key有关联的lease，则解绑
 		err = s.le.Detach(leaseID, []lease.LeaseItem{item})
 		if err != nil {
 			plog.Errorf("cannot detach %v", err)
@@ -694,6 +749,7 @@ func (s *store) ConsistentIndex() uint64 {
 }
 
 // appendMarkTombstone appends tombstone mark to normal revision bytes.
+// 向缓冲区添加一个tombstone标志位表示tombstone
 func appendMarkTombstone(b []byte) []byte {
 	if len(b) != revBytesLen {
 		plog.Panicf("cannot append mark to non normal revision bytes")
@@ -708,6 +764,7 @@ func isTombstone(b []byte) bool {
 
 // revBytesRange returns the range of revision bytes at
 // the given revision.
+// 根据传入的revision返回start和end范围
 func revBytesRange(rev revision) (start, end []byte) {
 	start = newRevBytes()
 	revToBytes(rev, start)
