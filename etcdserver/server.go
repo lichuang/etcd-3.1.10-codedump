@@ -305,43 +305,56 @@ func NewServer(cfg *ServerConfig) (srv *EtcdServer, err error) {
 
 	// 以下进行2种情况的共四种组合进行不同的初始化操作：是否已经存在WAL数据、是否是新的cluster
 	switch {
-	case !haveWAL && !cfg.NewCluster:
+	case !haveWAL && !cfg.NewCluster: // 既不存在WAL数据，也不是新的cluster
+		// 对配置合法性进行检查。
 		if err = cfg.VerifyJoinExisting(); err != nil {
 			return nil, err
 		}
+		// 根据配置信息，创建RaftCluster实例和其中的Member实例
 		cl, err = membership.NewClusterFromURLsMap(cfg.InitialClusterToken, cfg.InitialPeerURLsMap)
 		if err != nil {
 			return nil, err
 		}
+		// 查询节点成员信息，返回RaftCluster实例
 		existingCluster, gerr := GetClusterFromRemotePeers(getRemotePeerURLs(cl, cfg.Name), prt)
 		if gerr != nil {
 			return nil, fmt.Errorf("cannot fetch cluster info from peer urls: %v", gerr)
 		}
+		// 比较本地与远端获取的RaftCluster实例是否一致，主要是比较成员信息是否一致
 		if err = membership.ValidateClusterAndAssignIDs(cl, existingCluster); err != nil {
 			return nil, fmt.Errorf("error validating peerURLs %s: %v", existingCluster, err)
 		}
+		// 检查版本兼容性
 		if !isCompatibleWithCluster(cl, cl.MemberByName(cfg.Name).ID, prt) {
 			return nil, fmt.Errorf("incompatible with current running cluster")
 		}
-
+		// 拿到集群成员信息
 		remotes = existingCluster.Members()
+		// 保存本节点在集群中的ID
 		cl.SetID(existingCluster.ID())
+		// 保存store
 		cl.SetStore(st)
+		// 保存Backend
 		cl.SetBackend(be)
 		cfg.Print()
+		// 启动节点
 		id, n, s, w = startNode(cfg, cl, nil)
-	case !haveWAL && cfg.NewCluster:
+	case !haveWAL && cfg.NewCluster:	// 没有WAL数据，但是新的cluster
+		// 对当前节点启动用的配置进行检测
 		if err = cfg.VerifyBootstrap(); err != nil {
 			return nil, err
 		}
+		// 根据配置信息创建本地RaftCluster实例
 		cl, err = membership.NewClusterFromURLsMap(cfg.InitialClusterToken, cfg.InitialPeerURLsMap)
 		if err != nil {
 			return nil, err
 		}
+		// 根据当前节点名称，从RaftCluster中查找当前节点对应的Member实例
 		m := cl.MemberByName(cfg.Name)
 		if isMemberBootstrapped(cl, cfg.Name, prt, cfg.bootstrapTimeout()) {
 			return nil, fmt.Errorf("member %s has already been bootstrapped", m.ID)
 		}
+		// 是否使用Discover模式启动
 		if cfg.ShouldDiscover() {
 			var str string
 			str, err = discovery.JoinCluster(cfg.DiscoveryURL, cfg.DiscoveryProxy, m.ID, cfg.InitialPeerURLsMap.String())
@@ -365,14 +378,15 @@ func NewServer(cfg *ServerConfig) (srv *EtcdServer, err error) {
 		cfg.PrintWithInitial()
 		id, n, s, w = startNode(cfg, cl, cl.MemberIDs())
 	case haveWAL:	// 存在WAL数据的情况
+		// 检测member目录是否可写？
 		if err = fileutil.IsDirWriteable(cfg.MemberDir()); err != nil {
 			return nil, fmt.Errorf("cannot write to member directory: %v", err)
 		}
-
+		// 检测WAL目录是否可写？
 		if err = fileutil.IsDirWriteable(cfg.WALDir()); err != nil {
 			return nil, fmt.Errorf("cannot write to WAL directory: %v", err)
 		}
-
+		// 如果使用discover模式则报错
 		if cfg.ShouldDiscover() {
 			plog.Warningf("discovery token ignored since a cluster has already been initialized. Valid log found at %q", cfg.WALDir())
 		}
@@ -381,7 +395,7 @@ func NewServer(cfg *ServerConfig) (srv *EtcdServer, err error) {
 		if err != nil && err != snap.ErrNoSnapshot {
 			return nil, err
 		}
-		if snapshot != nil {
+		if snapshot != nil {	// 根据快照数据进行恢复
 			if err = st.Recovery(snapshot.Data); err != nil {
 				plog.Panicf("recovered store from snapshot error: %v", err)
 			}
@@ -1345,7 +1359,7 @@ func (s *EtcdServer) applyEntryNormal(e *raftpb.Entry) {
 		}
 		// promote lessor when the local member is leader and finished
 		// applying all entries from the last term.
-		if s.isLeader() {
+		if s.isLeader() {	// 提升为leader
 			s.lessor.Promote(s.Cfg.electionTimeout())
 		}
 		return
@@ -1398,6 +1412,7 @@ func (s *EtcdServer) applyEntryNormal(e *raftpb.Entry) {
 		return
 	}
 
+	// 到了这里就是返回ar.err = ErrNoSpace的情况了，也就是磁盘空间不足
 	plog.Errorf("applying raft message exceeded backend quota")
 	s.goAttach(func() {
 		a := &pb.AlarmRequest{

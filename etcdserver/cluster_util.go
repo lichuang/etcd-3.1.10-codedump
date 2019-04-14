@@ -31,6 +31,7 @@ import (
 
 // isMemberBootstrapped tries to check if the given member has been bootstrapped
 // in the given cluster.
+// 请求远端节点，检测当前集群中是否已经存在相同的节点
 func isMemberBootstrapped(cl *membership.RaftCluster, member string, rt http.RoundTripper, timeout time.Duration) bool {
 	rcl, err := getClusterFromRemotePeers(getRemotePeerURLs(cl, member), timeout, false, rt)
 	if err != nil {
@@ -60,11 +61,13 @@ func GetClusterFromRemotePeers(urls []string, rt http.RoundTripper) (*membership
 
 // If logerr is true, it prints out more error messages.
 func getClusterFromRemotePeers(urls []string, timeout time.Duration, logerr bool, rt http.RoundTripper) (*membership.RaftCluster, error) {
+	// 创建一个HTTP客户端
 	cc := &http.Client{
 		Transport: rt,
 		Timeout:   timeout,
 	}
-	for _, u := range urls {
+	for _, u := range urls {	// 请求节点中的所有URL，获取集群信息。请求成功一个就返回，否则遍历其他节点
+		// 查询集群成员
 		resp, err := cc.Get(u + "/members")
 		if err != nil {
 			if logerr {
@@ -80,6 +83,7 @@ func getClusterFromRemotePeers(urls []string, timeout time.Duration, logerr bool
 			}
 			continue
 		}
+		// 序列化成Member数组
 		var membs []*membership.Member
 		if err = json.Unmarshal(b, &membs); err != nil {
 			if logerr {
@@ -87,6 +91,7 @@ func getClusterFromRemotePeers(urls []string, timeout time.Duration, logerr bool
 			}
 			continue
 		}
+		// 拿到集群ID
 		id, err := types.IDFromString(resp.Header.Get("X-Etcd-Cluster-ID"))
 		if err != nil {
 			if logerr {
@@ -99,10 +104,11 @@ func getClusterFromRemotePeers(urls []string, timeout time.Duration, logerr bool
 		// if the membership members are present then prepare and return raft cluster
 		// if membership members are not present then the raft cluster formed will be
 		// an invalid empty cluster hence return failed to get raft cluster member(s) from the given urls error
-		if len(membs) > 0 {
+		if len(membs) > 0 {	// 成功查询就返回
 			return membership.NewClusterFromMembers("", id, membs), nil
 		}
 
+		// 到了这里就是集群没有成员的错误
 		return nil, fmt.Errorf("failed to get raft cluster member(s) from the given urls.")
 	}
 	return nil, fmt.Errorf("could not retrieve cluster information from the given urls")

@@ -162,12 +162,13 @@ func (a *applierV3backend) Put(txnID int64, p *pb.PutRequest) (*pb.PutResponse, 
 
 	var rr *mvcc.RangeResult
 	if p.PrevKv {
-		if txnID != noTxn {
+		// 如果需要返回这之前的数据
+		if txnID != noTxn {	// 如果传入了事务ID
 			rr, err = a.s.KV().TxnRange(txnID, p.Key, nil, mvcc.RangeOptions{})
 			if err != nil {
 				return nil, err
 			}
-		} else {
+		} else {	// 没有事务ID
 			rr, err = a.s.KV().Range(p.Key, nil, mvcc.RangeOptions{})
 			if err != nil {
 				return nil, err
@@ -175,18 +176,21 @@ func (a *applierV3backend) Put(txnID int64, p *pb.PutRequest) (*pb.PutResponse, 
 		}
 	}
 
-	if txnID != noTxn {
+	if txnID != noTxn {	// 有事务ID
 		rev, err = a.s.KV().TxnPut(txnID, p.Key, p.Value, lease.LeaseID(p.Lease))
 		if err != nil {
 			return nil, err
 		}
-	} else {
+	} else {	// 没有事务ID
 		leaseID := lease.LeaseID(p.Lease)
 		if leaseID != lease.NoLease {
+			// 查询lease是否存在
 			if l := a.s.lessor.Lookup(leaseID); l == nil {
+				// 不存在就返回错误
 				return nil, lease.ErrLeaseNotFound
 			}
 		}
+		// 到了这里就可以put数据了
 		rev = a.s.KV().Put(p.Key, p.Value, leaseID)
 	}
 	resp.Header.Revision = rev

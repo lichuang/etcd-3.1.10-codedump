@@ -97,6 +97,7 @@ func startEtcdOrProxyV2() {
 	}
 
 	which := identifyDataDirOrDie(cfg.Dir)
+	plog.Noticef("which: %v", which)
 	if which != dirEmpty {
 		plog.Noticef("the server is already initialized as %v before, starting as etcd %v...", which, which)
 		switch which {

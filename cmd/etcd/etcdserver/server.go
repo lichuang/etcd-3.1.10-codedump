@@ -1276,6 +1276,7 @@ func (s *EtcdServer) apply(es []raftpb.Entry, confState *raftpb.ConfState) (appl
 
 // applyEntryNormal apples an EntryNormal type raftpb request to the EtcdServer
 func (s *EtcdServer) applyEntryNormal(e *raftpb.Entry) {
+	plog.Infof("applyEntryNormal")
 	shouldApplyV3 := false
 	if e.Index > s.consistIndex.ConsistentIndex() {
 		// set the consistent index of current executing entry

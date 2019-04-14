@@ -161,7 +161,7 @@ func (a *applierV3backend) Put(txnID int64, p *pb.PutRequest) (*pb.PutResponse, 
 	)
 
 	var rr *mvcc.RangeResult
-	if p.PrevKv {
+	if p.PrevKv {	// 如果需要拿到这次修改之前的数据
 		if txnID != noTxn {
 			rr, err = a.s.KV().TxnRange(txnID, p.Key, nil, mvcc.RangeOptions{})
 			if err != nil {
@@ -175,7 +175,7 @@ func (a *applierV3backend) Put(txnID int64, p *pb.PutRequest) (*pb.PutResponse, 
 		}
 	}
 
-	if txnID != noTxn {
+	if txnID != noTxn {	// 传入的事务ID不为空
 		rev, err = a.s.KV().TxnPut(txnID, p.Key, p.Value, lease.LeaseID(p.Lease))
 		if err != nil {
 			return nil, err
@@ -183,7 +183,9 @@ func (a *applierV3backend) Put(txnID int64, p *pb.PutRequest) (*pb.PutResponse, 
 	} else {
 		leaseID := lease.LeaseID(p.Lease)
 		if leaseID != lease.NoLease {
+			// 传入的lease ID不为空
 			if l := a.s.lessor.Lookup(leaseID); l == nil {
+				// 查不到lease实例
 				return nil, lease.ErrLeaseNotFound
 			}
 		}
@@ -550,6 +552,7 @@ func (a *applierV3backend) Alarm(ar *pb.AlarmRequest) (*pb.AlarmResponse, error)
 
 		switch m.Alarm {
 		case pb.AlarmType_NOSPACE:
+			// 没有空间了，切换到applierV3Capped
 			plog.Warningf("alarm raised %+v", m)
 			a.s.applyV3 = newApplierV3Capped(a)
 		default:

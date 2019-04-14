@@ -23,28 +23,36 @@ func (s *store) scheduleCompaction(compactMainRev int64, keep map[revision]struc
 	totalStart := time.Now()
 	defer dbCompactionTotalDurations.Observe(float64(time.Since(totalStart) / time.Millisecond))
 
+	// 结束范围为compactMainRev+1
 	end := make([]byte, 8)
 	binary.BigEndian.PutUint64(end, uint64(compactMainRev+1))
 
+	// 每次多少批量
 	batchsize := int64(10000)
+	// 起始key，最开始为空
 	last := make([]byte, 8+1+8)
 	for {
 		var rev revision
 
 		start := time.Now()
+		// 拿到事务
 		tx := s.b.BatchTx()
+		// 拿到事务锁
 		tx.Lock()
 
+		// 查询范围内的key数组
 		keys, _ := tx.UnsafeRange(keyBucketName, last, end, batchsize)
 		for _, key := range keys {
 			rev = bytesToRev(key)
 			if _, ok := keep[rev]; !ok {
+				// 删除这些key的数据
 				tx.UnsafeDelete(keyBucketName, key)
 			}
 		}
 
-		if len(keys) < int(batchsize) {
+		if len(keys) < int(batchsize) {	// 小于批量，说明是最后一次查询
 			rbytes := make([]byte, 8+1+8)
+			// 将compactMainRev存放为finishedCompactKeyName
 			revToBytes(revision{main: compactMainRev}, rbytes)
 			tx.UnsafePut(metaBucketName, finishedCompactKeyName, rbytes)
 			tx.Unlock()
@@ -53,10 +61,12 @@ func (s *store) scheduleCompaction(compactMainRev int64, keep map[revision]struc
 		}
 
 		// update last
+		// 更新起始key的值，为上一次删除的{main,sub+1}
 		revToBytes(revision{main: rev.main, sub: rev.sub + 1}, last)
 		tx.Unlock()
 		dbCompactionPauseDurations.Observe(float64(time.Since(start) / time.Millisecond))
 
+		// 每删除一批数据就sleep一段时间
 		select {
 		case <-time.After(100 * time.Millisecond):
 		case <-s.stopc:

@@ -284,18 +284,21 @@ func (s *store) TxnDeleteRange(txnID int64, key, end []byte) (n, rev int64, err 
 	return n, rev, nil
 }
 
+// 进行压缩的屏障
 func (s *store) compactBarrier(ctx context.Context, ch chan struct{}) {
 	if ctx == nil || ctx.Err() != nil {
+		// 如果出错了
 		s.mu.Lock()
 		select {
-		case <-s.stopc:
-		default:
+		case <-s.stopc:	// 不做任何事
+		default:	// 默认的行为就是继续调度调用这个函数
 			f := func(ctx context.Context) { s.compactBarrier(ctx, ch) }
 			s.fifoSched.Schedule(f)
 		}
 		s.mu.Unlock()
 		return
 	}
+	// 只有在不出错的情况下，关闭channel返回
 	close(ch)
 }
 
@@ -349,6 +352,7 @@ func (s *store) Compact(rev int64) (<-chan struct{}, error) {
 		close(ch)
 	}
 
+	// 调度进行scheduleCompaction操作
 	s.fifoSched.Schedule(j)
 
 	// 记录compact操作的耗时
@@ -411,10 +415,12 @@ func (s *store) Restore(b backend.Backend) error {
 }
 
 func (s *store) restore() error {
+	// 最大和最小 revision
 	min, max := newRevBytes(), newRevBytes()
 	revToBytes(revision{main: 1}, min)
 	revToBytes(revision{main: math.MaxInt64, sub: math.MaxInt64}, max)
 
+	// 保存key与lease的对应关系
 	keyToLease := make(map[string]lease.LeaseID)
 
 	// use an unordered map to hold the temp index data to speed up
@@ -425,15 +431,19 @@ func (s *store) restore() error {
 	// restore index
 	tx := s.b.BatchTx()
 	tx.Lock()
+	// 查询上一次压缩完成时的revision
 	_, finishedCompactBytes := tx.UnsafeRange(metaBucketName, finishedCompactKeyName, nil, 0)
 	if len(finishedCompactBytes) != 0 {
+		// 保存到compactMainRev中
 		s.compactMainRev = bytesToRev(finishedCompactBytes[0]).main
 		plog.Printf("restore compact to %d", s.compactMainRev)
 	}
 
 	// TODO: limit N to reduce max memory usage
+	// 查询数据
 	keys, vals := tx.UnsafeRange(keyBucketName, min, max, 0)
 	for i, key := range keys {
+		// 反序列化
 		var kv mvccpb.KeyValue
 		if err := kv.Unmarshal(vals[i]); err != nil {
 			plog.Fatalf("cannot unmarshal event: %v", err)
@@ -443,17 +453,20 @@ func (s *store) restore() error {
 
 		// restore index
 		switch {
-		case isTombstone(key):
+		case isTombstone(key):	// tombstone的数据
 			if ki, ok := unordered[string(kv.Key)]; ok {
 				ki.tombstone(rev.main, rev.sub)
 			}
+			// 删除key与lease的对应关系
 			delete(keyToLease, string(kv.Key))
 
-		default:
+		default:	// 非tombstone的情况
 			ki, ok := unordered[string(kv.Key)]
 			if ok {
+				// 已经存在这个键值了，所以直接put操作进行覆盖
 				ki.put(rev.main, rev.sub)
 			} else {
+				// 否则restore，保存对应的keyIndex
 				ki = &keyIndex{key: kv.Key}
 				ki.restore(revision{kv.CreateRevision, 0}, rev, kv.Version)
 				unordered[string(kv.Key)] = ki
@@ -471,6 +484,7 @@ func (s *store) restore() error {
 	}
 
 	// restore the tree index from the unordered index.
+	// 保存keyIndex索引
 	for _, v := range unordered {
 		s.kvindex.Insert(v)
 	}
@@ -482,6 +496,7 @@ func (s *store) restore() error {
 		s.currentRev.main = s.compactMainRev
 	}
 
+	// key与lease的对应关系
 	for key, lid := range keyToLease {
 		if s.le == nil {
 			panic("no lessor to attach lease")

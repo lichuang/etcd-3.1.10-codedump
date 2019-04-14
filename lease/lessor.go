@@ -68,37 +68,46 @@ type Lessor interface {
 	SetRangeDeleter(dr RangeDeleter)
 
 	// Grant grants a lease that expires at least after TTL seconds.
+	// 创建lease实例，该实例在ttl之后过期
 	Grant(id LeaseID, ttl int64) (*Lease, error)
 	// Revoke revokes a lease with given ID. The item attached to the
 	// given lease will be removed. If the ID does not exist, an error
 	// will be returned.
+	// 撤销该lease ID对应的实例，这样该实例对应的lease item都会被删除
 	Revoke(id LeaseID) error
 
 	// Attach attaches given leaseItem to the lease with given LeaseID.
 	// If the lease does not exist, an error will be returned.
+	// 将一组lease item与一个lease ID绑定
 	Attach(id LeaseID, items []LeaseItem) error
 
 	// GetLease returns LeaseID for given item.
 	// If no lease found, NoLease value will be returned.
+	// 根据lease item返回其对应的lease实例ID
 	GetLease(item LeaseItem) LeaseID
 
 	// Detach detaches given leaseItem from the lease with given LeaseID.
 	// If the lease does not exist, an error will be returned.
+	// 将一组lease item与一个lease ID解除绑定
 	Detach(id LeaseID, items []LeaseItem) error
 
 	// Promote promotes the lessor to be the primary lessor. Primary lessor manages
 	// the expiration and renew of leases.
 	// Newly promoted lessor renew the TTL of all lease to extend + previous TTL.
+	// 提升为主lessor
 	Promote(extend time.Duration)
 
 	// Demote demotes the lessor from being the primary lessor.
+	// 降级
 	Demote()
 
 	// Renew renews a lease with given ID. It returns the renewed TTL. If the ID does not exist,
 	// an error will be returned.
+	// 续租一个lease ID
 	Renew(id LeaseID) (int64, error)
 
 	// Lookup gives the lease at a given lease id, if any
+	// 根据lease ID查询lease实例
 	Lookup(id LeaseID) *Lease
 
 	// ExpiredLeasesC returns a chan that is used to receive expired leases.
@@ -127,8 +136,10 @@ type lessor struct {
 	// We want to make Grant, Revoke, and findExpiredLeases all O(logN) and
 	// Renew O(1).
 	// findExpiredLeases and Renew should be the most frequent operations.
+	// 存储lease ID与lease的对应关系
 	leaseMap map[LeaseID]*Lease
 
+	// 存储每个leaseitem对应哪个leaseID
 	itemMap map[LeaseItem]LeaseID
 
 	// When a lease expires, the lessor will delete the
@@ -137,12 +148,15 @@ type lessor struct {
 
 	// backend to persist leases. We only persist lease ID and expiry for now.
 	// The leased items can be recovered by iterating all the keys in kv.
+	// 持久化存储
 	b backend.Backend
 
 	// minLeaseTTL is the minimum lease TTL that can be granted for a lease. Any
 	// requests for shorter TTLs are extended to the minimum TTL.
+	// 最小TTL
 	minLeaseTTL int64
 
+	// 过期lease通知channel
 	expiredC chan []*Lease
 	// stopC is a channel whose closure indicates that the lessor should be stopped.
 	stopC chan struct{}
@@ -545,6 +559,7 @@ type Lease struct {
 	ID  LeaseID
 	ttl int64 // time to live in seconds
 	// expiry is time when lease should expire; must be 64-bit aligned.
+	// 过期时间
 	expiry monotime.Time
 
 	// mu protects concurrent accesses to itemSet

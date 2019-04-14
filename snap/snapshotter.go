@@ -74,9 +74,11 @@ func (s *Snapshotter) SaveSnap(snapshot raftpb.Snapshot) error {
 func (s *Snapshotter) save(snapshot *raftpb.Snapshot) error {
 	start := time.Now()
 
+	// 快照文件名：最后一条日志记录任期号-最后一条记录索引号.snap
 	fname := fmt.Sprintf("%016x-%016x%s", snapshot.Metadata.Term, snapshot.Metadata.Index, snapSuffix)
 	b := pbutil.MustMarshal(snapshot)
 	crc := crc32.Update(0, crcTable, b)
+	// 序列化之后的数据封装成Snapshot
 	snap := snappb.Snapshot{Crc: crc, Data: b}
 	// 序列化
 	d, err := snap.Marshal()
@@ -86,7 +88,7 @@ func (s *Snapshotter) save(snapshot *raftpb.Snapshot) error {
 		marshallingDurations.Observe(float64(time.Since(start)) / float64(time.Second))
 	}
 
-	// 写磁盘
+	// 写入文件并且刷新磁盘
 	err = pioutil.WriteAndSyncFile(filepath.Join(s.dir, fname), d, 0666)
 	if err == nil {
 		// 记录一下花了多少时间
@@ -100,13 +102,16 @@ func (s *Snapshotter) save(snapshot *raftpb.Snapshot) error {
 	return err
 }
 
+// 加载目录下的所有快照文件，返回最近的快照数据
 func (s *Snapshotter) Load() (*raftpb.Snapshot, error) {
+	// 返回快照目录中的快照文件名
 	names, err := s.snapNames()
 	if err != nil {
 		return nil, err
 	}
 	var snap *raftpb.Snapshot
 	for _, name := range names {
+		// 依次加载
 		if snap, err = loadSnap(s.dir, name); err == nil {
 			break
 		}
@@ -114,6 +119,7 @@ func (s *Snapshotter) Load() (*raftpb.Snapshot, error) {
 	if err != nil {
 		return nil, ErrNoSnapshot
 	}
+	// 返回最近的快照数据
 	return snap, nil
 }
 
@@ -127,7 +133,9 @@ func loadSnap(dir, name string) (*raftpb.Snapshot, error) {
 }
 
 // Read reads the snapshot named by snapname and returns the snapshot.
+// 从快照文件中读取快照数据
 func Read(snapname string) (*raftpb.Snapshot, error) {
+	// 读文件内容
 	b, err := ioutil.ReadFile(snapname)
 	if err != nil {
 		plog.Errorf("cannot read file %v: %v", snapname, err)
@@ -139,6 +147,7 @@ func Read(snapname string) (*raftpb.Snapshot, error) {
 		return nil, ErrEmptySnapshot
 	}
 
+	// 反序列化文件内容
 	var serializedSnap snappb.Snapshot
 	if err = serializedSnap.Unmarshal(b); err != nil {
 		plog.Errorf("corrupted snapshot file %v: %v", snapname, err)
@@ -151,12 +160,14 @@ func Read(snapname string) (*raftpb.Snapshot, error) {
 	}
 
 	crc := crc32.Update(0, crcTable, serializedSnap.Data)
+	// 校验crc编码
 	if crc != serializedSnap.Crc {
 		plog.Errorf("corrupted snapshot file %v: crc mismatch", snapname)
 		return nil, ErrCRCMismatch
 	}
 
 	var snap raftpb.Snapshot
+	// 再从数据中反序列化出Snapshot
 	if err = snap.Unmarshal(serializedSnap.Data); err != nil {
 		plog.Errorf("corrupted snapshot file %v: %v", snapname, err)
 		return nil, err
@@ -166,6 +177,7 @@ func Read(snapname string) (*raftpb.Snapshot, error) {
 
 // snapNames returns the filename of the snapshots in logical time order (from newest to oldest).
 // If there is no available snapshots, an ErrNoSnapshot will be returned.
+// 查找快照目录中的所有快照文件，从最新到最旧文件进行排序，返回文件名数组
 func (s *Snapshotter) snapNames() ([]string, error) {
 	dir, err := os.Open(s.dir)
 	if err != nil {

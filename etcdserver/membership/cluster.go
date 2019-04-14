@@ -40,32 +40,41 @@ import (
 
 // RaftCluster is a list of Members that belong to the same raft cluster
 type RaftCluster struct {
+	// 当前节点ID
 	id    types.ID
+	// 集群ID
 	token string
 
+	// V2存储
 	store store.Store
+	// V3存储
 	be    backend.Backend
 
 	sync.Mutex // guards the fields below
 	version    *semver.Version
+	// 集群成员
 	members    map[types.ID]*Member
 	// removed contains the ids of removed members in the cluster.
 	// removed id cannot be reused.
+	// 被移除的节点ID
 	removed map[types.ID]bool
 }
 
 func NewClusterFromURLsMap(token string, urlsmap types.URLsMap) (*RaftCluster, error) {
 	c := NewCluster(token)
-	for name, urls := range urlsmap {
+	for name, urls := range urlsmap {	// 遍历集群中节点的地址，创建对应的member
 		m := NewMember(name, urls, token, nil)
+		// 如果有重复的节点ID，就报错返回
 		if _, ok := c.members[m.ID]; ok {
 			return nil, fmt.Errorf("member exists with identical ID %v", m)
 		}
+		// 没有节点ID，报错返回
 		if uint64(m.ID) == raft.None {
 			return nil, fmt.Errorf("cannot use %x as member id", raft.None)
 		}
 		c.members[m.ID] = m
 	}
+	// 为集群创建一个ID
 	c.genID()
 	return c, nil
 }
@@ -478,9 +487,11 @@ func clusterVersionFromStore(st store.Store) *semver.Version {
 // with the existing cluster. If the validation succeeds, it assigns the IDs
 // from the existing cluster to the local cluster.
 // If the validation fails, an error will be returned.
+// 对比本地的RaftCluster实例与远端获得的RaftCluster实例是否一致
 func ValidateClusterAndAssignIDs(local *RaftCluster, existing *RaftCluster) error {
 	ems := existing.Members()
 	lms := local.Members()
+	// 数量不同，返回
 	if len(ems) != len(lms) {
 		return fmt.Errorf("member count is unequal")
 	}
@@ -489,12 +500,13 @@ func ValidateClusterAndAssignIDs(local *RaftCluster, existing *RaftCluster) erro
 
 	ctx, cancel := context.WithTimeout(context.TODO(), 30*time.Second)
 	defer cancel()
-	for i := range ems {
+	for i := range ems {	// 遍历ems，检测对应节点暴露的URL地址是否匹配
 		if !netutil.URLStringsEqual(ctx, ems[i].PeerURLs, lms[i].PeerURLs) {
 			return fmt.Errorf("unmatched member while checking PeerURLs")
 		}
 		lms[i].ID = ems[i].ID
 	}
+	// 到了这里更新本地的RaftCluster实例
 	local.members = make(map[types.ID]*Member)
 	for _, m := range lms {
 		local.members[m.ID] = m

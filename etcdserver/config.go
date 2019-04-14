@@ -64,12 +64,15 @@ type ServerConfig struct {
 // VerifyBootstrap sanity-checks the initial config for bootstrap case
 // and returns an error for things that should never happen.
 func (c *ServerConfig) VerifyBootstrap() error {
+	// 检测配置中是否包括当前节点
 	if err := c.hasLocalMember(); err != nil {
 		return err
 	}
+	// 检测当前节点提供的URL与--initial-advertise-peer-urls配置项是否相同
 	if err := c.advertiseMatchesCluster(); err != nil {
 		return err
 	}
+	// 是否存在重复的URL
 	if checkDuplicateURL(c.InitialPeerURLsMap) {
 		return fmt.Errorf("initial cluster %s has duplicate url", c.InitialPeerURLsMap)
 	}

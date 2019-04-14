@@ -28,6 +28,7 @@ import (
 	"github.com/coreos/etcd/pkg/schedule"
 	"github.com/coreos/pkg/capnslog"
 	"golang.org/x/net/context"
+	"runtime/debug"
 )
 
 var (
@@ -539,6 +540,7 @@ func (s *store) rangeKeys(key, end []byte, limit, rangeRev int64, countOnly bool
 }
 
 func (s *store) put(key, value []byte, leaseID lease.LeaseID) {
+	plog.Infof("put stack: %s", string(debug.Stack()))
 	s.txnModify = true
 
 	rev := s.currentRev.main + 1

@@ -538,21 +538,25 @@ func (r *raft) tickHeartbeat() {
 	r.electionElapsed++
 
 	if r.electionElapsed >= r.electionTimeout {
+		// 如果超过了选举时间
 		r.electionElapsed = 0
 		if r.checkQuorum {
 			r.Step(pb.Message{From: r.id, Type: pb.MsgCheckQuorum})
 		}
 		// If current leader cannot transfer leadership in electionTimeout, it becomes leader again.
 		if r.state == StateLeader && r.leadTransferee != None {
+			// 超过选举超时，而本节点还是leader，且有新的迁移过去的leader，那么终止这次迁移，重新成为leader
 			r.abortLeaderTransfer()
 		}
 	}
 
 	if r.state != StateLeader {
+		// 不是leader的就不用往下走了
 		return
 	}
 
 	if r.heartbeatElapsed >= r.heartbeatTimeout {
+		// 向集群中其他节点发送广播消息
 		r.heartbeatElapsed = 0
 		r.Step(pb.Message{From: r.id, Type: pb.MsgBeat})
 	}
@@ -802,6 +806,8 @@ func stepLeader(r *raft, m pb.Message) {
 			// If we are not currently a member of the range (i.e. this node
 			// was removed from the configuration while serving as leader),
 			// drop any new proposals.
+			// 这里检查本节点是否还在集群以内，如果已经不在集群中了，不处理该消息直接返回。
+			// 这种情况出现在本节点已经通过配置变化被移除出了集群的场景。
 			return
 		}
 		if r.leadTransferee != None {
@@ -912,17 +918,22 @@ func stepLeader(r *raft, m pb.Message) {
 			r.sendAppend(m.From)
 		}
 
+		// 如果不是ReadOnlySafe方式，或者没有contex字段，就不用往下走了
 		if r.readOnly.option != ReadOnlySafe || len(m.Context) == 0 {
 			return
 		}
 
+		// 根据ctx字段，检查集群中有多少节点应答了
 		ackCount := r.readOnly.recvAck(m)
+		// 没有超过半数就返回
 		if ackCount < r.quorum() {
 			return
 		}
 
+		// 拿到新的readIndexStatus数组
 		rss := r.readOnly.advance(m)
 		for _, rs := range rss {
+			// 遍历数组生成最新的readStates
 			req := rs.req
 			if req.From == None || req.From == r.id { // from local member
 				r.readStates = append(r.readStates, ReadState{Index: rs.index, RequestCtx: req.Entries[0].Data})
@@ -1070,6 +1081,7 @@ func stepFollower(r *raft, m pb.Message) {
 			r.logger.Infof("%x no leader at term %d; dropping index reading msg", r.id, r.Term)
 			return
 		}
+		// readindex消息转发给leader
 		m.To = r.lead
 		r.send(m)
 	case pb.MsgReadIndexResp:
