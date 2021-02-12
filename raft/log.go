@@ -218,9 +218,11 @@ func (l *raftLog) firstIndex() uint64 {
 }
 
 func (l *raftLog) lastIndex() uint64 {
+	// 如果有未持久化的日志，返回未持久化日志的最后索引
 	if i, ok := l.unstable.maybeLastIndex(); ok {
 		return i
 	}
+	// 否则返回持久化日志的最后索引
 	i, err := l.storage.LastIndex()
 	if err != nil {
 		panic(err) // TODO(bdarnell)

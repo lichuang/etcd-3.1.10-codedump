@@ -163,7 +163,7 @@ func (pr *Progress) optimisticUpdate(n uint64) { pr.Next = n + 1 }
 // Otherwise it decreases the progress next index to min(rejected, last) and returns true.
 // maybeDecrTo函数在传入的索引不在范围内的情况下返回false
 // 否则将把该节点的index减少到min(rejected,last)然后返回true
-// rejected是拒绝该append消息时的索引，last是拒绝该消息的节点的最后一条日志索引
+// rejected是被拒绝的append消息的索引，last是拒绝该消息的节点的最后一条日志索引
 func (pr *Progress) maybeDecrTo(rejected, last uint64) bool {
 	if pr.State == ProgressStateReplicate {	// 如果当前在接收副本状态
 		// the rejection must be stale if the progress has matched and "rejected"

@@ -1267,7 +1267,8 @@ func stepFollower(r *raft, m pb.Message) {
 // 添加日志
 func (r *raft) handleAppendEntries(m pb.Message) {
 	// 先检查消息消息的合法性
-	if m.Index < r.raftLog.committed {
+	if m.Index < r.raftLog.committed {	// 传入的消息索引是已经commit过的索引
+		// 返回commit日志索引
 		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: r.raftLog.committed})
 		return
 	}
