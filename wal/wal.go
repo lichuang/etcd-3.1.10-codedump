@@ -87,28 +87,28 @@ type WAL struct {
 	dirFile *os.File
 
 	// 每个WAL文件最开始的地方，都需要写入的元数据
-	metadata []byte           // metadata recorded at the head of each WAL
+	metadata []byte // metadata recorded at the head of each WAL
 	// 每次写入entryType类型的记录之后，都需要追加一条stateType类型的数据，state成员就用于存储当前状态
-	state    raftpb.HardState // hardstate recorded at the head of WAL
+	state raftpb.HardState // hardstate recorded at the head of WAL
 
 	// 记录当前快照数据。每次读取WAL文件时，并不会从头开始读取。而是根据这里的快照数据定位到位置。
 	// Snapshot.Index记录了对应快照数据的最后一条entry记录的索引，而Snapshot.Term记录的是对应记录的任期号。
-	start     walpb.Snapshot // snapshot to start reading
+	start walpb.Snapshot // snapshot to start reading
 	// 负责反序列化数据到Record
-	decoder   *decoder       // decoder to decode records
-	readClose func() error   // closer for decode reader
+	decoder   *decoder     // decoder to decode records
+	readClose func() error // closer for decode reader
 
 	// 读写WAL文件时的锁
-	mu      sync.Mutex
+	mu sync.Mutex
 	// WAL中最后一条entry记录的索引数据
-	enti    uint64   // index of the last entry saved to the wal
+	enti uint64 // index of the last entry saved to the wal
 	// 负责将Record记录序列化成二进制数据
 	encoder *encoder // encoder to encode records
 
 	// 当前所有的WAL日志文件实例
 	locks []*fileutil.LockedFile // the locked files the WAL holds (the name is increasing)
 	// 负责创建新的WAL临时文件
-	fp    *filePipeline
+	fp *filePipeline
 }
 
 // Create creates a WAL ready for appending records. The given metadata is
@@ -239,7 +239,7 @@ func openAtIndex(dirpath string, snap walpb.Snapshot, write bool) (*WAL, error) 
 	// 遍历在这之后的wal文件
 	for _, name := range names[nameIndex:] {
 		p := filepath.Join(dirpath, name)
-		if write {	// 如果需要写文件
+		if write { // 如果需要写文件
 			l, err := fileutil.TryLockFile(p, os.O_RDWR, fileutil.PrivateFileMode)
 			if err != nil {
 				closeAll(rcs...)
@@ -247,7 +247,7 @@ func openAtIndex(dirpath string, snap walpb.Snapshot, write bool) (*WAL, error) 
 			}
 			ls = append(ls, l)
 			rcs = append(rcs, l)
-		} else {	// 只读模式
+		} else { // 只读模式
 			rf, err := os.OpenFile(p, os.O_RDONLY, fileutil.PrivateFileMode)
 			if err != nil {
 				closeAll(rcs...)
@@ -263,7 +263,7 @@ func openAtIndex(dirpath string, snap walpb.Snapshot, write bool) (*WAL, error) 
 
 	// create a WAL ready for reading
 	w := &WAL{
-		dir:       dirpath,
+		dir: dirpath,
 		// 保存快照数据
 		start:     snap,
 		decoder:   newDecoder(rs...),
@@ -294,7 +294,7 @@ func openAtIndex(dirpath string, snap walpb.Snapshot, write bool) (*WAL, error) 
 // If loaded snap doesn't match with the expected one, it will return
 // all the records and error ErrSnapshotMismatch.
 // ReadAll函数负责从当前WAL实例中读取所有的记录
-// 如果是可写模式，那么必须独处所有的记录，否则将报错
+// 如果是可写模式，那么必须读出所有的记录，否则将报错
 // 如果是只读模式，将尝试读取所有的记录，但是如果读出的记录没有满足快照数据的要求，将返回ErrSnapshotNotFound
 // 而如果读出来的快照数据与要求的快照数据不匹配，返回所有的记录以及ErrSnapshotMismatch
 // TODO: detect not-last-snap error.
@@ -311,19 +311,19 @@ func (w *WAL) ReadAll() (metadata []byte, state raftpb.HardState, ents []raftpb.
 	// 循环读出record记录
 	for err = decoder.decode(rec); err == nil; err = decoder.decode(rec) {
 		switch rec.Type {
-		case entryType:	// entry类型
+		case entryType: // entry类型
 			// 反序列化数据成entry返回
 			e := mustUnmarshalEntry(rec.Data)
-			if e.Index > w.start.Index {	// 这条记录是在快照数据之后的数据
+			if e.Index > w.start.Index { // 这条记录是在快照数据之后的数据
 				// 添加到ents数组
 				ents = append(ents[:e.Index-w.start.Index-1], e)
 			}
 			// 保存entry记录索引
 			w.enti = e.Index
-		case stateType:	// state类型
+		case stateType: // state类型
 			// 反序列化保存在state中
 			state = mustUnmarshalState(rec.Data)
-		case metadataType:	// meta数据类型
+		case metadataType: // meta数据类型
 			// 如果当前已经存在meta数据，而且两者不匹配
 			if metadata != nil && !bytes.Equal(metadata, rec.Data) {
 				// 返回ErrMetadataConflict错误
@@ -332,7 +332,7 @@ func (w *WAL) ReadAll() (metadata []byte, state raftpb.HardState, ents []raftpb.
 			}
 			// 保存下来
 			metadata = rec.Data
-		case crcType:	// crc类型
+		case crcType: // crc类型
 			crc := decoder.crc.Sum32()
 			// current crc of decoder must match the crc of the record.
 			// do no need to match 0 crc, since the decoder is a new one at this case.
@@ -343,11 +343,11 @@ func (w *WAL) ReadAll() (metadata []byte, state raftpb.HardState, ents []raftpb.
 				return nil, state, nil, ErrCRCMismatch
 			}
 			decoder.updateCRC(rec.Crc)
-		case snapshotType:	// 快照数据
+		case snapshotType: // 快照数据
 			var snap walpb.Snapshot
 			pbutil.MustUnmarshal(&snap, rec.Data)
-			if snap.Index == w.start.Index {	// 两者的索引相同
-				if snap.Term != w.start.Term {	// 但是任期号不同
+			if snap.Index == w.start.Index { // 两者的索引相同
+				if snap.Term != w.start.Term { // 但是任期号不同
 					state.Reset()
 					// 返回ErrSnapshotMismatch错误
 					return nil, state, nil, ErrSnapshotMismatch
@@ -371,14 +371,14 @@ func (w *WAL) ReadAll() (metadata []byte, state raftpb.HardState, ents []raftpb.
 		// The last record maybe a partial written one, so
 		// ErrunexpectedEOF might be returned.
 		// 在只读模式下，可能没有读完全部的记录。最后一条记录可能是只写了一部分，此时就会返回ErrunexpectedEOF错误
-		if err != io.EOF && err != io.ErrUnexpectedEOF {	// 如果不是EOF以及ErrunexpectedEOF错误的情况就返回错误
+		if err != io.EOF && err != io.ErrUnexpectedEOF { // 如果不是EOF以及ErrunexpectedEOF错误的情况就返回错误
 			state.Reset()
 			return nil, state, nil, err
 		}
 	default:
 		// 写模式下必须读完全部的记录
 		// We must read all of the entries if WAL is opened in write mode.
-		if err != io.EOF {	// 如果不是EOF错误，说明没有读完数据就报错了，这种情况也是返回错误
+		if err != io.EOF { // 如果不是EOF错误，说明没有读完数据就报错了，这种情况也是返回错误
 			state.Reset()
 			return nil, state, nil, err
 		}
@@ -412,7 +412,7 @@ func (w *WAL) ReadAll() (metadata []byte, state raftpb.HardState, ents []raftpb.
 
 	w.metadata = metadata
 
-	if w.tail() != nil {	// 写模式下还有wal文件，因此下面创建encoder
+	if w.tail() != nil { // 写模式下还有wal文件，因此下面创建encoder
 		// create encoder (chain crc with the decoder), enable appending
 		w.encoder, err = newFileEncoder(w.tail().File, w.decoder.lastCRC())
 		if err != nil {
@@ -520,6 +520,7 @@ func (w *WAL) cut() error {
 	return nil
 }
 
+// 将WAL文件都落盘
 func (w *WAL) sync() error {
 	if w.encoder != nil {
 		if err := w.encoder.flush(); err != nil {
@@ -532,7 +533,7 @@ func (w *WAL) sync() error {
 
 	// 记录落盘花费的时间
 	duration := time.Since(start)
-	if duration > warnSyncDuration {	// 大于告警阈值
+	if duration > warnSyncDuration { // 大于告警阈值
 		plog.Warningf("sync duration of %v, expected less than %v", duration, warnSyncDuration)
 	}
 	// 记录下来
@@ -676,7 +677,7 @@ func (w *WAL) Save(st raftpb.HardState, ents []raftpb.Entry) error {
 	}
 	// 没有写满预分配空间
 	if curOff < SegmentSizeBytes {
-		if mustSync {	// 落盘之后就可以返回了
+		if mustSync { // 落盘之后就可以返回了
 			return w.sync()
 		}
 		return nil
