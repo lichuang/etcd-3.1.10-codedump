@@ -121,6 +121,7 @@ func Create(dirpath string, metadata []byte) (*WAL, error) {
 	}
 
 	// keep temporary wal directory so WAL initialization appears atomic
+	// 先以.tmp来命名目录，创建完毕再一次性切换成新目录
 	tmpdirpath := filepath.Clean(dirpath) + ".tmp"
 	if fileutil.Exist(tmpdirpath) {
 		if err := os.RemoveAll(tmpdirpath); err != nil {
@@ -167,7 +168,7 @@ func Create(dirpath string, metadata []byte) (*WAL, error) {
 	if err = w.encoder.encode(&walpb.Record{Type: metadataType, Data: metadata}); err != nil {
 		return nil, err
 	}
-	// 紧跟着是snapshotType类型记录
+	// 紧跟着是写入空的快照记录
 	if err = w.SaveSnapshot(walpb.Snapshot{}); err != nil {
 		return nil, err
 	}
