@@ -111,7 +111,7 @@ func (s *Snapshotter) Load() (*raftpb.Snapshot, error) {
 	}
 	var snap *raftpb.Snapshot
 	for _, name := range names {
-		// 依次加载
+		// 从新的到旧的顺序加载快照数据，第一个加载没有错的快照文件就退出循环
 		if snap, err = loadSnap(s.dir, name); err == nil {
 			break
 		}
@@ -134,6 +134,30 @@ func loadSnap(dir, name string) (*raftpb.Snapshot, error) {
 
 // Read reads the snapshot named by snapname and returns the snapshot.
 // 从快照文件中读取快照数据
+// 注意：文件中的数据格式是snappb.Snapshot格式，加载之后要变成raftpb.Snapshot格式。
+// 两者的差别：
+
+// 即：snappb.Snapshot的data数据部分存储的是raftpb.Snapshot格式序列化之后的数据，然后加了CRC值
+
+/* snappb.Snapshot：
+message snapshot {
+	optional uint32 crc  = 1 [(gogoproto.nullable) = false];
+	optional bytes data  = 2;
+}
+*/
+
+/* raftpb.Snapshot：
+message SnapshotMetadata {
+	optional ConfState conf_state = 1 [(gogoproto.nullable) = false];
+	optional uint64    index      = 2 [(gogoproto.nullable) = false];
+	optional uint64    term       = 3 [(gogoproto.nullable) = false];
+}
+
+message Snapshot {
+	optional bytes            data     = 1;
+	optional SnapshotMetadata metadata = 2 [(gogoproto.nullable) = false];
+}
+*/
 func Read(snapname string) (*raftpb.Snapshot, error) {
 	// 读文件内容
 	b, err := ioutil.ReadFile(snapname)
@@ -212,6 +236,7 @@ func checkSuffix(names []string) []string {
 	return snaps
 }
 
+// 加载错误的文件，重命名加broken，避免下一次还要加载这个文件
 func renameBroken(path string) {
 	brokenPath := path + ".broken"
 	if err := os.Rename(path, brokenPath); err != nil {

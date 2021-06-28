@@ -246,6 +246,7 @@ func openAtIndex(dirpath string, snap walpb.Snapshot, write bool) (*WAL, error) 
 				closeAll(rcs...)
 				return nil, err
 			}
+			// 如果是写操作，这里把上一步返回的锁添加进来
 			ls = append(ls, l)
 			rcs = append(rcs, l)
 		} else { // 只读模式
@@ -254,7 +255,9 @@ func openAtIndex(dirpath string, snap walpb.Snapshot, write bool) (*WAL, error) 
 				closeAll(rcs...)
 				return nil, err
 			}
+			// 如果是读操作，这里添加进去的是空值
 			ls = append(ls, nil)
+			// 这里把打开的文件handler加进去
 			rcs = append(rcs, rf)
 		}
 		rs = append(rs, rcs[len(rcs)-1])
@@ -400,7 +403,7 @@ func (w *WAL) ReadAll() (metadata []byte, state raftpb.HardState, ents []raftpb.
 
 	err = nil
 	if !match {
-		// 快照数据不匹配
+		// 没找到快照数据
 		err = ErrSnapshotNotFound
 	}
 

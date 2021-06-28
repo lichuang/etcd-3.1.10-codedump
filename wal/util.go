@@ -73,6 +73,7 @@ func isValidSeq(names []string) bool {
 }
 
 // 传入WAL文件目录，扫描其中的所有文件，返回所有文件名格式为"16位整数-16位整数.wal"的文件名数组
+// 注意：返回的数组中是按照这些整数进行排序的
 func readWalNames(dirpath string) ([]string, error) {
 	names, err := fileutil.ReadDir(dirpath)
 	if err != nil {

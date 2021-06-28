@@ -312,24 +312,24 @@ func TestUnstableTruncateAndAppend(t *testing.T) {
 		wentries []pb.Entry
 	}{
 		// append to the end
-		{
+		{ // 0
 			[]pb.Entry{{Index: 5, Term: 1}}, 5, nil,
 			[]pb.Entry{{Index: 6, Term: 1}, {Index: 7, Term: 1}},
 			5, []pb.Entry{{Index: 5, Term: 1}, {Index: 6, Term: 1}, {Index: 7, Term: 1}},
 		},
 		// replace the unstable entries
-		{
+		{ // 1
 			[]pb.Entry{{Index: 5, Term: 1}}, 5, nil,
 			[]pb.Entry{{Index: 5, Term: 2}, {Index: 6, Term: 2}},
 			5, []pb.Entry{{Index: 5, Term: 2}, {Index: 6, Term: 2}},
 		},
-		{
+		{ // 2
 			[]pb.Entry{{Index: 5, Term: 1}}, 5, nil,
 			[]pb.Entry{{Index: 4, Term: 2}, {Index: 5, Term: 2}, {Index: 6, Term: 2}},
 			4, []pb.Entry{{Index: 4, Term: 2}, {Index: 5, Term: 2}, {Index: 6, Term: 2}},
 		},
 		// truncate the existing entries and append
-		{
+		{ // 3
 			[]pb.Entry{{Index: 5, Term: 1}, {Index: 6, Term: 1}, {Index: 7, Term: 1}}, 5, nil,
 			[]pb.Entry{{Index: 6, Term: 2}},
 			5, []pb.Entry{{Index: 5, Term: 1}, {Index: 6, Term: 2}},
