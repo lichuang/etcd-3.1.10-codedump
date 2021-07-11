@@ -30,7 +30,7 @@ import (
 const minSectorSize = 512
 
 type decoder struct {
-	mu  sync.Mutex
+	mu sync.Mutex
 	// 在WAL.openAtIndex方法中打开的日志文件
 	brs []*bufio.Reader
 
@@ -66,7 +66,7 @@ func (d *decoder) decodeRecord(rec *walpb.Record) error {
 
 	// 尝试读一个Int64的值
 	l, err := readInt64(d.brs[0])
-	if err == io.EOF || (err == nil && l == 0) {	// 如果EOF（读到了文件尾）或者读不到数据
+	if err == io.EOF || (err == nil && l == 0) { // 如果EOF（读到了文件尾）或者读不到数据
 		// hit end of file or preallocated space
 		// 这时可能读到了这个文件的最后
 		// 尝试读下一个wal文件
@@ -93,7 +93,7 @@ func (d *decoder) decodeRecord(rec *walpb.Record) error {
 	if _, err = io.ReadFull(d.brs[0], data); err != nil {
 		// ReadFull returns io.EOF only if no bytes were read
 		// the decoder should treat this as an ErrUnexpectedEOF instead.
-		if err == io.EOF {	// 读不到数据
+		if err == io.EOF { // 读不到数据
 			err = io.ErrUnexpectedEOF
 		}
 		return err
@@ -139,14 +139,17 @@ func decodeFrameSize(lenField int64) (recBytes int64, padBytes int64) {
 
 // isTornEntry determines whether the last entry of the WAL was partially written
 // and corrupted because of a torn write.
+// 部分写：同一条记录，数据被破坏了
 func (d *decoder) isTornEntry(data []byte) bool {
 	if len(d.brs) != 1 {
 		return false
 	}
 
+	// 跳过前面的8位长度
 	fileOff := d.lastValidOff + 8
 	curOff := 0
 	chunks := [][]byte{}
+	// 分成多个sector
 	// split data on sector boundaries
 	for curOff < len(data) {
 		chunkLen := int(minSectorSize - (fileOff % minSectorSize))
@@ -159,6 +162,7 @@ func (d *decoder) isTornEntry(data []byte) bool {
 	}
 
 	// if any data for a sector chunk is all 0, it's a torn write
+	// 遍历sector，只要一个sector中的数据全部为0，就认为出现了部分写
 	for _, sect := range chunks {
 		isZero := true
 		for _, v := range sect {

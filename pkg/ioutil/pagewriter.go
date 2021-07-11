@@ -48,11 +48,12 @@ type PageWriter struct {
 // to write per page. pageOffset is the starting offset of io.Writer.
 func NewPageWriter(w io.Writer, pageBytes, pageOffset int) *PageWriter {
 	return &PageWriter{
-		w:                 w,
-		pageOffset:        pageOffset,
-		pageBytes:         pageBytes,
+		w:          w,
+		pageOffset: pageOffset,
+		pageBytes:  pageBytes,
 		// 预分配buffer，为什么是defaultBufferBytes+pageBytes？
-		buf:               make([]byte, defaultBufferBytes+pageBytes),
+		buf: make([]byte, defaultBufferBytes+pageBytes),
+		// defaultBufferBytes远大于pageBytes
 		bufWatermarkBytes: defaultBufferBytes,
 	}
 }
@@ -65,11 +66,16 @@ func (pw *PageWriter) Write(p []byte) (n int, err error) {
 		pw.bufferedBytes += len(p)
 		return len(p), nil
 	}
+
+	// 以下是处理写入数据+缓存数据超过水位的情况
+
 	// 因为缓冲区会回绕，所以下面的计算要用 %
 	// complete the slack page in the buffer if unaligned
 	// slack存储的是页剩余空间
 	slack := pw.pageBytes - ((pw.pageOffset + pw.bufferedBytes) % pw.pageBytes)
-	if slack != pw.pageBytes {	// 不足一页
+	if slack != pw.pageBytes { // 当前已写入数据并不是正好对齐一页
+		// 是否部分写的标准在于剩余空间是否大于写入数据大小
+		// partial为true，意味着写入的数据不超过剩余空间大小
 		partial := slack > len(p)
 		if partial {
 			// not enough data to complete the slack page
@@ -77,29 +83,39 @@ func (pw *PageWriter) Write(p []byte) (n int, err error) {
 			slack = len(p)
 		}
 		// special case: writing to slack page in buffer
+		// 将正好可以填满一页的数据写入缓冲区
 		copy(pw.buf[pw.bufferedBytes:], p[:slack])
 		pw.bufferedBytes += slack
 		n = slack
 		p = p[slack:]
 		if partial {
+			// 如果是部分写，即写不满剩余空间，就返回写成功
 			// avoid forcing an unaligned flush
 			return n, nil
 		}
 	}
+
+	// 到了这里，有几种情况：
+	// 1、slack = pw.pageBytes，即当前已写入数据正好对齐一页
+	// 2、写入的数据大小 => slack大小，即写入的数据大于等于剩余空间大小
+
 	// buffer contents are now page-aligned; clear out
+	// 当前缓存的数据已经页对齐了，先将这部分数据写入磁盘
 	if err = pw.Flush(); err != nil {
 		return n, err
 	}
 	// directly write all complete pages without copying
-	if len(p) > pw.pageBytes {
+	if len(p) > pw.pageBytes { // 如果待写入数据超过pageBytes，直接先写入pageBytes的数据
 		pages := len(p) / pw.pageBytes
 		c, werr := pw.w.Write(p[:pages*pw.pageBytes])
 		n += c
 		if werr != nil {
 			return n, werr
 		}
+		// 更新p指针指向pageBytes之后的数据
 		p = p[pages*pw.pageBytes:]
 	}
+	// 接着写剩下的数据
 	// write remaining tail to buffer
 	c, werr := pw.Write(p)
 	n += c
@@ -112,7 +128,7 @@ func (pw *PageWriter) Flush() error {
 	}
 	// 写入磁盘
 	_, err := pw.w.Write(pw.buf[:pw.bufferedBytes])
-	// 更新页偏移量
+	// 更新页偏移量，主要会出现回绕，所以要%
 	pw.pageOffset = (pw.pageOffset + pw.bufferedBytes) % pw.pageBytes
 	pw.bufferedBytes = 0
 	return err

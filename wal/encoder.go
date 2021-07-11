@@ -52,10 +52,12 @@ func newEncoder(w io.Writer, prevCrc uint32, pageOffset int) *encoder {
 
 // newFileEncoder creates a new encoder with current file offset for the page writer.
 func newFileEncoder(f *os.File, prevCrc uint32) (*encoder, error) {
+	// 拿到当前的偏移量，因为有可能打开的是一个已经存在的文件
 	offset, err := f.Seek(0, os.SEEK_CUR)
 	if err != nil {
 		return nil, err
 	}
+	// 以偏移量来初始化encoder
 	return newEncoder(f, prevCrc, int(offset)), nil
 }
 
